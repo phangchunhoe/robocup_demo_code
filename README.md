@@ -44,6 +44,9 @@ This demo is designed for running on Booster K1, if you'd like to run this demo 
 RLVisionKick
     enableAutoVisualKick: true // This feature is only supported on the Booster K1, requiring firmware version 1.5.2 or higher.
 ```
+VisionKick is only support on K1 and requiring firmware version 1.5.2 or higher. See [Firmware 1.5.2 Install Reference](https://booster.feishu.cn/wiki/E3q5wF5SnitXZgkY18Uc8odBnXb#share-BYaDdL4nAoPfdcx2y3BcwORyndf) for install instruction.
+
+Please make sure you have installed latest Booster Robotics SDK.
 
 ## Note
 This repo support jetpack 6.2. Adapted to the default TRT model in src/vision/config/vision.yaml.
