@@ -11,25 +11,54 @@ using namespace std;
 
 int main(int argc, char **argv)
 {
-
+    // Starts ROS2
     rclcpp::init(argc, argv);
 
+    // The Behavioral Trees live inside brain class
+    // brain -> robot's decision making system
     std::shared_ptr<Brain> brain = std::make_shared<Brain>();
 
     // initialize operations: read parameters, construct BehaviorTree, etc.
+    // init() loads:
+    // - Behavioral Trees (XML)
+    // - Parameters
+    // - Sensors / Configs
+
     brain->init();
 
     // Start a separate thread to run the tick function of Brain at a fixed frequency (HZ). The main thread will handle ROS2 callbacks.
+
+    // Start a separate thread to execute brain.tick
+    // Dedicated to the BT tick loop. Ensures that robots
+    // decision making logic stays at 100Hz regardless
+
     thread t([&brain]() {
         while (rclcpp::ok()) {
             auto start_time = brain->get_clock()->now();
             brain->tick();
+
+            // Starts running Behavioral Trees 
+            // Every Tick starts from the root
             auto end_time = brain->get_clock()->now();
             auto duration = (end_time - start_time).nanoseconds() / 1000000.0; // Convert to milliseconds
+
+            // Performance logging
             brain->log->log_scalar("performance", "brain_tick_duration_ms", duration);
             this_thread::sleep_for(chrono::milliseconds(static_cast<int>(1000 / HZ)));
         } 
     });
+
+    /*
+        What this listens to:
+            - /remote_controller_state (manual control/override)
+            - /robocup/game_controller 
+              (Referee System -> tells your robot when it is penalty, stop etc)
+
+        These function gets triggered:
+            - Brain::joystickCallback(...)
+            - Brain::gameControlCallback(...)
+        These updates the blackboard / internal state
+    */
 
     // Start a separate thread to handle joystick and gamecontroller callbacks
     thread t1([&brain, &argc, &argv]() {
@@ -50,6 +79,8 @@ int main(int argc, char **argv)
 
     // Use a single-threaded executor
     rclcpp::executors::SingleThreadedExecutor executor;
+
+    // This handles callbacks inside `Brain`, sensors and internal communication
     executor.add_node(brain);
     executor.spin();
 

@@ -12,17 +12,22 @@
 #include <fstream>
 #include <ios>
 
-/**
+/*
  * Here we use a macro definition to reduce the code for RegisterBuilder. The effect of REGISTER_BUILDER(Test) after expansion is
  * factory.registerBuilder<Test>(  \
  *      "Test",                    \
  *     [this](const string& name, const NodeConfig& config) { return make_unique<Test>(name, config, brain); });
  */
+
+// Registering Nodes (very impt)
 #define REGISTER_BUILDER(Name)     \
     factory.registerBuilder<Name>( \
         #Name,                     \
         [this](const string &name, const NodeConfig &config) { return make_unique<Name>(name, config, brain); });
 
+// This is to register nodes
+// nodes like <Chase /> are initialised here
+// <Chase /> calls Chase::tick()
 void BrainTree::init()
 {
     BehaviorTreeFactory factory;
@@ -69,6 +74,7 @@ void BrainTree::init()
     initEntry();
 }
 
+// Blackboard (shared memory for behavior trees)
 void BrainTree::initEntry()
 {
     setEntry<string>("player_role", brain->config->get_player_role());
@@ -113,11 +119,17 @@ void BrainTree::initEntry()
     setEntry<double>("calibrate_z_step", 0.01);
 }
 
+// Runs Entire Behavioral Tree
 void BrainTree::tick()
 {
     tree.tickOnce();
 }
 
+// -------------------------- ACTION NODES -----------------------------------
+// Each Class = One Behavior
+
+// Just Move Robot
+// <SetVelocity x="0.5" y="0.0" theta="0" />
 NodeStatus SetVelocity::tick()
 {
     double x, y, theta;
@@ -139,6 +151,13 @@ NodeStatus StepOnSpot::tick()
     return NodeStatus::SUCCESS;
 }
 
+// Keeps Camera Pointed at Ball
+/*
+    if ball detected :
+        adjust head to center ball
+    else:
+        use estimated position
+*/
 NodeStatus CamTrackBall::tick()
 {
     double pitch, yaw, ballX, ballY, deltaX, deltaY;
@@ -502,6 +521,7 @@ NodeStatus GoToFreekickPosition::onRunning() {
 
     return NodeStatus::RUNNING;
 }
+
 void GoToFreekickPosition::onHalted() {
 }
 
@@ -759,6 +779,8 @@ NodeStatus CalcKickDir::tick()
     return NodeStatus::SUCCESS;
 }
 
+// This is your decision making core
+// It chooses between find / chase / adjust / kick / assist
 NodeStatus StrikerDecide::tick() {
     auto log = [=](string msg) {
         brain->log->debug("striker_decide", msg);
@@ -805,6 +827,9 @@ NodeStatus StrikerDecide::tick() {
     string newDecision;
     bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
     bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+
+
+    // can modify this logic to better suit our needs
     if (!(iKnowBallPos || tmBallPosReliable))
     {
         newDecision = "find";
