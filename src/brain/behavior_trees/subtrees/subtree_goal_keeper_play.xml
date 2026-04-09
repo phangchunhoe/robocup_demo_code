@@ -50,7 +50,13 @@
                      -->
                      <!-- Goalkeepers have greater chase_thresholds -->
                      <!-- They can start intercepting early, without leaving goal line -->
-                     <GoalieDecide decision_out="{decision}" decision_in="{decision}" chase_threshold="3.0"/>
+                     <GoalieDecide
+                        decision_out="{decision}"
+                        decision_in="{decision}"
+                        chase_threshold="3.0"
+                        adjust_angle_tolerance="0.18"
+                        adjust_y_tolerance="0.12"
+                     />
 
                      <!-- The Below 2 is to ensure that they return to goal -->
                      <!-- Ensures that they return to goal even if they do not see the ball. -->

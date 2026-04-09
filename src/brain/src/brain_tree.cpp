@@ -12,6 +12,44 @@
 #include <fstream>
 #include <ios>
 
+namespace {
+Point2D getOwnGoalCenter(const FieldDimensions &fd)
+{
+    return Point2D{-fd.length / 2.0, 0.0};
+}
+
+double calcGoalieClearDir(const Point &ballPos, const FieldDimensions &fd)
+{
+    auto goalCenter = getOwnGoalCenter(fd);
+    return atan2(ballPos.y - goalCenter.y, ballPos.x - goalCenter.x);
+}
+
+Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, double distToGoalline, const string &role)
+{
+    auto goalCenter = getOwnGoalCenter(fd);
+    const double minGoalClearance = 0.2;
+    const double minBallClearance = role == "striker" ? 0.8 : 0.5;
+    const double shotDist = max(norm(ballPos.x - goalCenter.x, ballPos.y - goalCenter.y), 1e-5);
+    const double blockDir = calcGoalieClearDir(ballPos, fd);
+
+    double blockDist = min(distToGoalline, max(minGoalClearance, shotDist - minBallClearance));
+
+    Pose2D targetPose;
+    targetPose.x = goalCenter.x + blockDist * cos(blockDir);
+    targetPose.y = goalCenter.y + blockDist * sin(blockDir);
+
+    const double maxAbsY = role == "striker"
+        ? fd.goalWidth / 2.0
+        : max(0.2, fd.goalAreaWidth / 2.0 - 0.2);
+    targetPose.y = cap(targetPose.y, maxAbsY, -maxAbsY);
+
+    const double maxX = goalCenter.x + max(distToGoalline, fd.goalAreaLength + 0.2);
+    targetPose.x = cap(targetPose.x, maxX, goalCenter.x + minGoalClearance);
+    targetPose.theta = atan2(ballPos.y - targetPose.y, ballPos.x - targetPose.x);
+    return targetPose;
+}
+}
+
 /*
  * Here we use a macro definition to reduce the code for RegisterBuilder. The effect of REGISTER_BUILDER(Test) after expansion is
  * factory.registerBuilder<Test>(  \
@@ -537,41 +575,40 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     string curRole = brain->tree->getEntry<string>("player_role");
 
-    Pose2D targetPose;
-    targetPose.x = curRole == "striker" ? (std::max(- fd.length / 2.0 + distToGoalline, ballPos.x - 1.5))
-            : (- fd.length / 2.0 + distToGoalline);
-    if (ballPos.x + fd.length / 2.0 < distToGoalline) {
-        targetPose.y = curRole == "striker" ? (ballPos.y > 0 ? fd.goalWidth / 2.0 : -fd.goalWidth / 2.0)
-            : (ballPos.y > 0 ? fd.goalWidth / 4.0 : -fd.goalWidth / 4.0);
-    } else {
-        targetPose.y = ballPos.y * distToGoalline / (ballPos.x + fd.length / 2.0);
-        targetPose.y = curRole == "striker" ? (cap(targetPose.y, fd.goalWidth / 2.0, -fd.goalWidth / 2.0))
-            : (cap(targetPose.y, fd.penaltyAreaWidth/ 2.0, -fd.penaltyAreaWidth / 2.0));
-    }
+    Pose2D targetPose = calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
+    double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
     if ( // Considered to have reached the target position
         dist < distTolerance
-        && fabs(brain->data->ball.yawToRobot) < thetaTolerance
+        && fabs(deltaTheta) < thetaTolerance
     ) {
         brain->client->setVelocity(0, 0, 0);
         return NodeStatus::SUCCESS;
     }
 
-    auto targetPose_r = brain->data->field2robot(targetPose);
-    double vx = targetPose_r.x;
-    double vy = targetPose_r.y;
-    double vtheta = brain->data->ball.yawToRobot * 4.0; 
-
-
     double vxLimit, vyLimit;
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
-    vx = cap(vx, vxLimit, -vxLimit);    
-    vy = cap(vy, vyLimit, -vyLimit);    
-    
 
-    brain->client->setVelocity(vx, vy, vtheta);
+    const double longRangeThreshold = 1.0;
+    const double turnThreshold = 0.4;
+    const double vthetaLimit = 1.2;
+    const bool avoidObstacle = false;
+    brain->client->moveToPoseOnField2(
+        targetPose.x,
+        targetPose.y,
+        targetPose.theta,
+        longRangeThreshold,
+        turnThreshold,
+        vxLimit,
+        vyLimit,
+        vthetaLimit,
+        distTolerance,
+        distTolerance,
+        thetaTolerance,
+        avoidObstacle
+    );
     return NodeStatus::SUCCESS;
 }
 
@@ -903,17 +940,28 @@ NodeStatus GoalieDecide::tick()
 
     double chaseRangeThreshold;
     getInput("chase_threshold", chaseRangeThreshold);
+    double adjustAngleTolerance;
+    getInput("adjust_angle_tolerance", adjustAngleTolerance);
+    double adjustYTolerance;
+    getInput("adjust_y_tolerance", adjustYTolerance);
     string lastDecision, position;
     getInput("decision_in", lastDecision);
 
-    double kickDir = atan2(brain->data->ball.posToField.y, brain->data->ball.posToField.x + brain->config->fieldDimensions.length / 2);
+    double kickDir = calcGoalieClearDir(brain->data->ball.posToField, brain->config->fieldDimensions);
+    brain->data->kickDir = kickDir;
+    brain->data->kickType = "block";
     double dir_rb_f = brain->data->robotBallAngleToField;
-    auto goalPostAngles = brain->getGoalPostAngles(0.3);
-    double theta_l = goalPostAngles[0]; 
-    double theta_r = goalPostAngles[1]; 
-    bool angleIsGood = (dir_rb_f > -M_PI / 2 && dir_rb_f < M_PI / 2);
+    double deltaDir = toPInPI(kickDir - dir_rb_f);
     double ballRange = brain->data->ball.range;
     double ballYaw = brain->data->ball.yawToRobot;
+    bool clearLineAligned = fabs(deltaDir) < adjustAngleTolerance;
+    bool ballCentered = fabs(brain->data->ball.posToRobot.y) < adjustYTolerance;
+    bool ballInFront = fabs(ballYaw) < M_PI / 2;
+    bool canClearNow = clearLineAligned
+        && ballCentered
+        && ballInFront
+        && brain->data->ballDetected
+        && ballRange < 1.0;
 
     string newDecision;
     bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
@@ -929,7 +977,7 @@ NodeStatus GoalieDecide::tick()
     {
         newDecision = "chase";
     }
-    else if (angleIsGood)
+    else if (canClearNow)
     {
         newDecision = "kick";
     }
@@ -951,7 +999,7 @@ NodeStatus GoalieDecide::tick()
         ballYaw,
         kickDir,
         dir_rb_f,
-        angleIsGood,
+        canClearNow,
         false,  // goalie does not need is_lead information
         "map"
     );
