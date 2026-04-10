@@ -239,10 +239,10 @@ private:
 };
 
 
-class Chase : public SyncActionNode
+class StrikerChase : public SyncActionNode
 {
 public:
-    Chase(const string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
+    StrikerChase(const string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
 
     static PortsList providedPorts()
     {
@@ -259,8 +259,29 @@ public:
 
 private:
     Brain *brain;
-    string _state;     
-    double _dir = 1.0; 
+};
+
+
+class GoalieChase : public SyncActionNode
+{
+public:
+    GoalieChase(const string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
+
+    static PortsList providedPorts()
+    {
+        return {
+            InputPort<double>("vx_limit", 0.6, "Maximum x speed when chasing the ball"),
+            InputPort<double>("vy_limit", 0.4, "Maximum y speed when chasing the ball"),
+            InputPort<double>("vtheta_limit", 1.0, "Maximum angular speed when chasing the ball"),
+            InputPort<double>("dist", 0.1, "Target distance behind the ball when chasing"),
+            InputPort<double>("safe_dist", 4.0, "Safe distance to maintain when circling back"),
+        };
+    }
+
+    NodeStatus tick() override;
+
+private:
+    Brain *brain;
 };
 
 
