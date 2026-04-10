@@ -509,6 +509,9 @@ public:
             InputPort<double>("vx_limit", 0.1, "x speed limit"),
             InputPort<double>("vy_limit", 0.1, "y speed limit"),
             InputPort<double>("dist_to_goalline", 2.5, "Distance from the robot to the goal line"),
+            InputPort<bool>("retreat_mode", false, "When true, retreat quickly while still facing the ball"),
+            InputPort<bool>("avoid_obstacle", false, "Enable obstacle avoidance while moving to the blocking pose"),
+            InputPort<bool>("stabilize_ball_line", true, "Smooth the mapped ball-goal line to reduce lateral jitter"),
         };
     }
 

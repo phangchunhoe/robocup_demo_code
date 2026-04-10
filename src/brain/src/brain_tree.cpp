@@ -196,6 +196,121 @@ GameObject selectGoalieTrackedBall(const Brain *brain)
         : brain->data->ball;
 }
 
+Point filterGoalieBallForBlocking(const Brain *brain, const Point &ballPos, bool retreatMode)
+{
+    static bool initialized = false;
+    static Point filteredBallPos{};
+
+    if (
+        !initialized
+        || norm(ballPos.x - filteredBallPos.x, ballPos.y - filteredBallPos.y) > 1.0
+    ) {
+        filteredBallPos = ballPos;
+        initialized = true;
+        return filteredBallPos;
+    }
+
+    double alphaX = retreatMode ? 0.45 : 0.30;
+    double alphaY = retreatMode ? 0.35 : 0.16;
+    if (!retreatMode && fabs(ballPos.y - filteredBallPos.y) < 0.08) {
+        alphaY *= 0.25;
+    }
+
+    filteredBallPos.x = filteredBallPos.x * (1.0 - alphaX) + ballPos.x * alphaX;
+    filteredBallPos.y = filteredBallPos.y * (1.0 - alphaY) + ballPos.y * alphaY;
+    filteredBallPos.z = ballPos.z;
+    return filteredBallPos;
+}
+
+bool hasRobotNearFieldPoint(const Brain *brain, const Point &point, double radius)
+{
+    auto robots = brain->data->getRobots();
+    for (const auto &robot : robots) {
+        if (norm(robot.posToField.x - point.x, robot.posToField.y - point.y) < radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasObstacleNearFieldPoint(const Brain *brain, const Point &point, double radius)
+{
+    auto obstacles = brain->data->getObstacles();
+    double obstacleThreshold = brain->config->get_occupancy_threshold();
+    for (const auto &obstacle : obstacles) {
+        if (obstacle.label == "Ball" || obstacle.confidence < obstacleThreshold) continue;
+        if (norm(obstacle.posToField.x - point.x, obstacle.posToField.y - point.y) < radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isGoalieDangerBall(const Brain *brain, const GameObject &ball)
+{
+    auto fd = brain->config->fieldDimensions;
+    const double ownThirdX = -fd.length / 2.0 + fd.length * 0.42;
+    bool inOwnPenaltyArea = ball.posToField.x < -fd.length / 2.0 + fd.penaltyAreaLength + 0.8;
+    bool inGoalLane = fabs(ball.posToField.y) < fd.goalAreaWidth / 2.0 + 0.9;
+    bool attackerNearBall = hasRobotNearFieldPoint(brain, ball.posToField, 1.1)
+        || hasObstacleNearFieldPoint(brain, ball.posToField, 0.8);
+    bool ballNearGoal = ball.posToField.x < ownThirdX && inGoalLane;
+    bool ballCloseToKeeper = ball.range < 1.8 && ball.posToField.x <= getGoalieMidfieldLimitX();
+
+    return inOwnPenaltyArea || (ballNearGoal && attackerNearBall) || (ballCloseToKeeper && attackerNearBall);
+}
+
+tuple<double, double, double> calcGoalieRetreatVelocity(
+    Brain *brain,
+    const Pose2D &targetPose,
+    double vxLimit,
+    double vyLimit,
+    double vthetaLimit,
+    bool avoidObstacle
+)
+{
+    auto targetPose_r = brain->data->field2robot(targetPose);
+    double deltaTheta = toPInPI(targetPose.theta - brain->data->robotPoseToField.theta);
+    double dist = norm(targetPose_r.x, targetPose_r.y);
+
+    double vx = targetPose_r.x * 1.6;
+    if (targetPose_r.x > 0.0) {
+        vx = min(targetPose_r.x * 0.4, 0.2);
+    }
+    if (fabs(deltaTheta) > 0.9) {
+        vx *= 0.5;
+    }
+    vx = cap(vx, 0.2, -vxLimit);
+
+    double lateralGain = dist > 1.0 ? 0.55 : 0.85;
+    double vy = targetPose_r.y * lateralGain;
+    if (fabs(targetPose_r.y) < 0.08) {
+        vy = 0.0;
+    }
+    vy = cap(vy, vyLimit, -vyLimit);
+
+    double vtheta = cap(deltaTheta * 2.5, vthetaLimit, -vthetaLimit);
+
+    if (avoidObstacle) {
+        double travelDir = atan2(vy, vx);
+        double safeDist = max(0.8, min(brain->config->get_safe_distance(), 1.2));
+        double distToObstacle = brain->distToObstacle(travelDir);
+        if (distToObstacle < safeDist) {
+            double avoidDir = brain->calcAvoidDir(travelDir, safeDist);
+            double speed = min(vxLimit, max(0.45, dist));
+            vx = speed * cos(avoidDir);
+            vy = speed * sin(avoidDir);
+            if (vx > 0.15) {
+                vx = 0.15;
+            }
+            vy = cap(vy, vyLimit, -vyLimit);
+            vtheta = cap(deltaTheta * 2.0, vthetaLimit, -vthetaLimit);
+        }
+    }
+
+    return make_tuple(vx, vy, vtheta);
+}
+
 tuple<double, double, double> calcChaseVelocity(
     Brain *brain,
     const GameObject &trackedBall,
@@ -376,6 +491,7 @@ void BrainTree::initEntry()
     setEntry<bool>("assist_kick", false);
     setEntry<bool>("go_manual", false);
     setEntry<bool>("goalie_free_ball", false);
+    setEntry<bool>("goalie_urgent_clear", false);
 
     setEntry<bool>("we_just_scored", false);
     setEntry<bool>("wait_for_opponent_kickoff", false);
@@ -601,12 +717,13 @@ NodeStatus GoalieChase::tick()
     getInput("safe_dist", safeDist);
 
     bool goalieFreeBall = brain->tree->getEntry<bool>("goalie_free_ball");
-    if (goalieFreeBall) {
+    bool goalieUrgentClear = brain->tree->getEntry<bool>("goalie_urgent_clear");
+    if (goalieFreeBall || goalieUrgentClear) {
         vxLimit = max(vxLimit, brain->config->get_vx_limit());
         vyLimit = max(vyLimit, brain->config->get_vy_limit());
         vthetaLimit = max(vthetaLimit, brain->config->get_vtheta_limit());
-        dist = min(dist, 0.05);
-        safeDist = min(safeDist, 0.3);
+        dist = min(dist, goalieFreeBall ? 0.02 : 0.05);
+        safeDist = min(safeDist, goalieFreeBall ? 0.25 : 0.35);
     }
 
     static string targetType = "direct";
@@ -783,11 +900,17 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double distTolerance = getInput<double>("dist_tolerance").value();
     double thetaTolerance = getInput<double>("theta_tolerance").value();
     double distToGoalline = getInput<double>("dist_to_goalline").value();
+    bool retreatMode = getInput<bool>("retreat_mode").value();
+    bool avoidObstacle = getInput<bool>("avoid_obstacle").value();
+    bool stabilizeBallLine = getInput<bool>("stabilize_ball_line").value();
 
     auto fd = brain->config->fieldDimensions;
-    auto ballPos = (!brain->data->ballDetected && brain->tree->getEntry<bool>("tm_ball_pos_reliable"))
+    auto ballPosRaw = (!brain->data->ballDetected && brain->tree->getEntry<bool>("tm_ball_pos_reliable"))
         ? brain->data->tmBall.posToField
         : brain->data->ball.posToField;
+    auto ballPos = (stabilizeBallLine && brain->tree->getEntry<string>("player_role") == "goal_keeper")
+        ? filterGoalieBallForBlocking(brain, ballPosRaw, retreatMode)
+        : ballPosRaw;
     auto robotPose = brain->data->robotPoseToField;
 
     string curRole = brain->tree->getEntry<string>("player_role");
@@ -811,10 +934,23 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
 
+    if (retreatMode && curRole == "goal_keeper") {
+        double retreatVthetaLimit = max(1.2, brain->config->get_vtheta_limit());
+        auto [vx, vy, vtheta] = calcGoalieRetreatVelocity(
+            brain,
+            targetPose,
+            max(vxLimit, 0.8),
+            max(vyLimit, 0.3),
+            retreatVthetaLimit,
+            avoidObstacle
+        );
+        setGoalieAwareVelocity(brain, vx, vy, vtheta);
+        return NodeStatus::SUCCESS;
+    }
+
     const double longRangeThreshold = 1.0;
     const double turnThreshold = 0.4;
     const double vthetaLimit = 1.2;
-    const bool avoidObstacle = false;
     brain->client->moveToPoseOnField2(
         targetPose.x,
         targetPose.y,
@@ -941,12 +1077,16 @@ NodeStatus Adjust::tick()
     getInput("vtheta_limit", vthetaLimit);
     getInput("range", range);
     bool goalieFreeBall = isGoalKeeperRole(brain) && brain->tree->getEntry<bool>("goalie_free_ball");
-    if (goalieFreeBall) {
+    bool goalieUrgentClear = isGoalKeeperRole(brain) && brain->tree->getEntry<bool>("goalie_urgent_clear");
+    if (goalieFreeBall || goalieUrgentClear) {
         vxLimit = max(vxLimit, brain->config->get_vx_limit());
         vyLimit = max(vyLimit, brain->config->get_vy_limit());
         vthetaLimit = max(vthetaLimit, brain->config->get_vtheta_limit());
-        st_far = max(st_far, 1.2);
-        st_near = max(st_near, 0.5);
+        st_far = goalieFreeBall ? max(st_far, 1.2) : min(st_far, 0.45);
+        st_near = goalieFreeBall ? max(st_near, 0.5) : min(st_near, 0.18);
+        if (goalieUrgentClear) {
+            range = min(range, 0.12);
+        }
     }
     log(format("ballX: %.1f ballY: %.1f ballYaw: %.1f", brain->data->ball.posToRobot.x, brain->data->ball.posToRobot.y, brain->data->ball.yawToRobot));
     double NO_TURN_THRESHOLD, TURN_FIRST_THRESHOLD;
@@ -964,6 +1104,9 @@ NodeStatus Adjust::tick()
     double R = ballRange; 
     double r = range;
     double sr = cap(R - r, 0.5, 0); 
+    if (goalieUrgentClear) {
+        sr = cap(R - r, 0.9, -0.1);
+    }
     log(format("R: %.2f, r: %.2f, sr: %.2f", R, r, sr));
 
     log(format("deltaDir = %.1f", deltaDir));
@@ -980,6 +1123,13 @@ NodeStatus Adjust::tick()
     vy = st * sin(thetat_r) + sr * sin(thetar_r); 
     vtheta = ballYaw;
     vtheta *= vtheta_factor; 
+
+    if (goalieUrgentClear) {
+        vy *= 0.45;
+        if (ballRange < 1.2 && fabs(deltaDir) < 0.5) {
+            vx = max(vx, min(vxLimit, 0.8));
+        }
+    }
 
     if (fabs(ballYaw) < NO_TURN_THRESHOLD) vtheta = 0.; 
     if (
@@ -1208,9 +1358,16 @@ NodeStatus GoalieDecide::tick()
     bool freeBall = ballConfidenceHigh
         && ballPos.x <= getGoalieMidfieldLimitX()
         && isGoalieFreeBall(brain, ballPos);
-    bool allowedToLeaveBlock = freeBall || ballConfidenceHigh || routeSafe;
+    bool dangerBall = isGoalieDangerBall(brain, trackedBall);
+    bool urgentClear = brain->data->ballDetected && (freeBall || dangerBall);
+    bool allowedToLeaveBlock = freeBall || ballConfidenceHigh || routeSafe || dangerBall;
     const double retreatHysteresis = 0.2;
     bool ballBeyondHalf = ballPos.x > getGoalieMidfieldLimitX() - (lastDecision == "retreat" ? retreatHysteresis : 0.0);
+    bool canEmergencyClear = brain->data->ballDetected
+        && ballInFront
+        && ballRange < (dangerBall ? 1.45 : 1.15)
+        && fabs(trackedBall.posToRobot.y) < (dangerBall ? max(0.24, adjustYTolerance * 2.5) : adjustYTolerance * 1.6)
+        && fabs(deltaDir) < (dangerBall ? max(0.50, adjustAngleTolerance * 2.8) : adjustAngleTolerance * 1.8);
 
     string newDecision;
     if (!(iKnowBallPos || tmBallPosReliable))
@@ -1221,7 +1378,7 @@ NodeStatus GoalieDecide::tick()
     {
         newDecision = "retreat";
     }
-    else if (canClearNow)
+    else if (canClearNow || (urgentClear && canEmergencyClear))
     {
         newDecision = "kick";
     }
@@ -1230,6 +1387,10 @@ NodeStatus GoalieDecide::tick()
         newDecision = "retreat";
     }
     else if (ballRange > chaseRangeThreshold * (lastDecision == "chase" ? 0.9 : 1.0))
+    {
+        newDecision = "chase";
+    }
+    else if (dangerBall && brain->data->ballDetected && ballRange > 0.7)
     {
         newDecision = "chase";
     }
@@ -1242,6 +1403,7 @@ NodeStatus GoalieDecide::tick()
         "goalie_free_ball",
         freeBall && (newDecision == "chase" || newDecision == "adjust" || newDecision == "kick")
     );
+    brain->tree->setEntry<bool>("goalie_urgent_clear", urgentClear);
 
     setOutput("decision_out", newDecision);
     
@@ -1330,8 +1492,9 @@ NodeStatus Kick::onStart()
     // Publish movement command
     double angle = brain->data->ball.yawToRobot;
     bool goalieFreeBall = role == "goal_keeper" && brain->tree->getEntry<bool>("goalie_free_ball");
-    if (goalieFreeBall) {
-        _speed = 1.2;
+    bool goalieUrgentClear = role == "goal_keeper" && brain->tree->getEntry<bool>("goalie_urgent_clear");
+    if (goalieFreeBall || goalieUrgentClear) {
+        _speed = goalieFreeBall ? 2.0 : 1.6;
     }
     crabWalkGoalieAware(brain, angle, _speed);
     return NodeStatus::RUNNING;
@@ -1379,9 +1542,11 @@ NodeStatus Kick::onRunning()
     double speed = getInput<double>("speed_limit").value();
     bool goalieFreeBall = brain->tree->getEntry<string>("player_role") == "goal_keeper"
         && brain->tree->getEntry<bool>("goalie_free_ball");
-    if (goalieFreeBall) {
-        msecs = max(msecs, 900.0);
-        speed = max(speed, 1.5);
+    bool goalieUrgentClear = brain->tree->getEntry<string>("player_role") == "goal_keeper"
+        && brain->tree->getEntry<bool>("goalie_urgent_clear");
+    if (goalieFreeBall || goalieUrgentClear) {
+        msecs = max(msecs, goalieFreeBall ? 1100.0 : 900.0);
+        speed = max(speed, goalieFreeBall ? 2.0 : 1.6);
     }
     msecs = msecs + brain->data->ball.range / speed * 1000;
     if (brain->msecsSince(_startTime) > msecs) { 
@@ -1393,8 +1558,8 @@ NodeStatus Kick::onRunning()
     if (brain->data->ballDetected) { 
         double angle = brain->data->ball.yawToRobot;
         double speed = getInput<double>("speed_limit").value();
-        if (goalieFreeBall) {
-            speed = max(speed, 1.5);
+        if (goalieFreeBall || goalieUrgentClear) {
+            speed = max(speed, goalieFreeBall ? 2.0 : 1.6);
         }
         _speed += 0.1; 
         speed = min(speed, _speed);
