@@ -56,6 +56,8 @@
                         chase_threshold="3.0"
                         adjust_angle_tolerance="0.18"
                         adjust_y_tolerance="0.12"
+                        defensive_threshold_ratio="0.0"
+                        free_ball_radius="0.9"
                      />
 
                      <!-- The Below 2 is to ensure that they return to goal -->
@@ -65,7 +67,7 @@
                      <GoToGoalBlockingPosition _while="decision == 'retreat'" theta_tolerance="0.6" />
 
                      <!-- Goalkeeper can chase, but they should return back to goal -->
-                     <GoalieChase   _while="decision == 'chase'"  vx_limit="0.8"  vy_limit="0.3"  vtheta_limit="1.0"  dist="0.1" safe_dist="0.5" />
+                     <GoalieChase   _while="decision == 'chase'"  vx_limit="1.2"  vy_limit="0.4"  vtheta_limit="1.2"  dist="0.1" safe_dist="0.5" />
                      <!-- Slightly different Adjust to prioritise blocking angle rather than approaching ball for a shot -->
                      <Adjust _while="decision =='adjust'" turn_threshold="0.8" range="0.2" vx_limit="0.8" vy_limit="0.6" vtheta_limit="1.0" vtheta_factor="4.5" tangential_speed_far="0.9" tangential_speed_near="0.3" />
 

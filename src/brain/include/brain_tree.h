@@ -108,6 +108,8 @@ public:
             InputPort<double>("chase_threshold", 1.0, "If the distance exceeds this value, execute the chase action"),
             InputPort<double>("adjust_angle_tolerance", 0.1, "If the angle is less than this value, consider adjust successful"), //
             InputPort<double>("adjust_y_tolerance", 0.1, "If the y-direction offset is less than this value, consider y-direction adjust successful"),  //
+            InputPort<double>("defensive_threshold_ratio", 0.0, "0 keeps the goalie clearance threshold at the penalty-area front line, 1 moves it to the halfway line"),
+            InputPort<double>("free_ball_radius", 0.9, "If no humanoid is within this radius of the ball, the ball is treated as free"),
             InputPort<string>("decision_in", "", "Used to read the previous decision"),
             InputPort<double>("auto_visual_kick_enable_dist_min", 2.0, "Minimum distance for enabling auto visual kick"),
             InputPort<double>("auto_visual_kick_enable_dist_max", 3.0, "Maximum distance for enabling auto visual kick"),
