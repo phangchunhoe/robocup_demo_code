@@ -158,6 +158,15 @@ bool isBallFreeForGoalie(Brain *brain, double freeBallRadius)
     return true;
 }
 
+Pose2D calcGoalieHomePose(const FieldDimensions &fd)
+{
+    Pose2D targetPose;
+    targetPose.x = -fd.length / 2.0 + fd.goalAreaLength;
+    targetPose.y = 0.0;
+    targetPose.theta = 0.0;
+    return targetPose;
+}
+
 Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, double distToGoalline, const string &role)
 {
     auto goalCenter = getOwnGoalCenter(fd);
@@ -284,6 +293,7 @@ void BrainTree::initEntry()
     setEntry<bool>("go_manual", false);
     setEntry<bool>("goalie_free_ball", false);
     setEntry<bool>("goalie_urgent_clear", false);
+    setEntry<bool>("goalie_return_home", false);
 
     setEntry<bool>("we_just_scored", false);
     setEntry<bool>("wait_for_opponent_kickoff", false);
@@ -638,7 +648,10 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     string curRole = brain->tree->getEntry<string>("player_role");
 
-    Pose2D targetPose = calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
+    bool returnHome = brain->tree->getEntry<bool>("goalie_return_home");
+    Pose2D targetPose = returnHome
+        ? calcGoalieHomePose(fd)
+        : calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
@@ -1010,6 +1023,10 @@ NodeStatus GoalieDecide::tick()
     getInput("defensive_threshold_ratio", defensiveThresholdRatio);
     double freeBallRadius;
     getInput("free_ball_radius", freeBallRadius);
+    double returnHomeXMargin;
+    getInput("return_home_x_margin", returnHomeXMargin);
+    double visualBallTimeoutMsec;
+    getInput("visual_ball_timeout_msec", visualBallTimeoutMsec);
     string lastDecision;
     getInput("decision_in", lastDecision);
 
@@ -1036,14 +1053,19 @@ NodeStatus GoalieDecide::tick()
     const bool ballFree = isBallFreeForGoalie(brain, freeBallRadius);
     const bool amFastestToBall = brain->data->tmMyCostRank == 0;
     const bool amFastEnoughToBall = brain->data->tmMyCost <= brain->config->get_ball_control_cost_threshold();
+    const auto homePose = calcGoalieHomePose(fd);
+    const bool physicallyLostBall = !brain->data->ballDetected && brain->msecsSince(brain->data->ball.timePoint) > visualBallTimeoutMsec;
+    const bool tooFarFromHome = brain->data->robotPoseToField.x > homePose.x + returnHomeXMargin && !ballWithinDefensiveThreshold;
     const bool shouldEmergencyClear = ballWithinDefensiveThreshold
         && ballFree
         && amFastestToBall
         && amFastEnoughToBall
         && brain->data->ballDetected;
+    const bool shouldReturnHome = physicallyLostBall || tooFarFromHome;
 
     brain->tree->setEntry<bool>("goalie_free_ball", ballFree);
     brain->tree->setEntry<bool>("goalie_urgent_clear", shouldEmergencyClear);
+    brain->tree->setEntry<bool>("goalie_return_home", shouldReturnHome);
 
     string newDecision;
     bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
@@ -1051,6 +1073,10 @@ NodeStatus GoalieDecide::tick()
     if (!(iKnowBallPos || tmBallPosReliable))
     {
         newDecision = "find";
+    }
+    else if (shouldReturnHome)
+    {
+        newDecision = "retreat";
     }
     else if (canClearNow)
     {

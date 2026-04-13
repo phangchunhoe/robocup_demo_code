@@ -110,6 +110,8 @@ public:
             InputPort<double>("adjust_y_tolerance", 0.1, "If the y-direction offset is less than this value, consider y-direction adjust successful"),  //
             InputPort<double>("defensive_threshold_ratio", 0.0, "0 keeps emergency clear near the penalty-area front line, 1 extends it to halfway"),
             InputPort<double>("free_ball_radius", 0.9, "If no humanoid is within this radius of the ball, the ball is treated as free"),
+            InputPort<double>("return_home_x_margin", 0.35, "How far in front of the goalie home point the robot may drift before it is forced back home"),
+            InputPort<double>("visual_ball_timeout_msec", 1200.0, "If the goalie cannot physically see the ball for longer than this, it returns home"),
             InputPort<string>("decision_in", "", "Used to read the previous decision"),
             InputPort<double>("auto_visual_kick_enable_dist_min", 2.0, "Minimum distance for enabling auto visual kick"),
             InputPort<double>("auto_visual_kick_enable_dist_max", 3.0, "Maximum distance for enabling auto visual kick"),
