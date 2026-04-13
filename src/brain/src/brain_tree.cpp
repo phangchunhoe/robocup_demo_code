@@ -118,6 +118,46 @@ double calcGoalieClearDir(const Point &ballPos, const FieldDimensions &fd)
     return atan2(ballPos.y - goalCenter.y, ballPos.x - goalCenter.x);
 }
 
+double getOwnPenaltyAreaFrontX(const FieldDimensions &fd)
+{
+    return -fd.length / 2.0 + fd.penaltyAreaLength;
+}
+
+double calcGoalieDefensiveThresholdX(const FieldDimensions &fd, double defensiveThresholdRatio)
+{
+    const double ratio = cap(defensiveThresholdRatio, 1.0, 0.0);
+    const double penaltyAreaFrontX = getOwnPenaltyAreaFrontX(fd);
+    return penaltyAreaFrontX + ratio * (0.0 - penaltyAreaFrontX);
+}
+
+bool isBallFreeForGoalie(Brain *brain, double freeBallRadius)
+{
+    const auto ballPos = brain->data->ball.posToField;
+    const double obstacleThreshold = brain->config->get_occupancy_threshold();
+
+    for (const auto &obstacle : brain->data->getObstacles()) {
+        if (obstacle.confidence < obstacleThreshold) continue;
+
+        if (norm(obstacle.posToField.x - ballPos.x, obstacle.posToField.y - ballPos.y) < freeBallRadius) {
+            return false;
+        }
+    }
+
+    const int selfIdx = brain->config->get_player_id() - 1;
+    for (int i = 0; i < HL_MAX_NUM_PLAYERS; i++) {
+        if (i == selfIdx) continue;
+
+        const auto &tmStatus = brain->data->tmStatus[i];
+        if (!tmStatus.isAlive) continue;
+
+        if (norm(tmStatus.robotPoseToField.x - ballPos.x, tmStatus.robotPoseToField.y - ballPos.y) < freeBallRadius) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, double distToGoalline, const string &role)
 {
     auto goalCenter = getOwnGoalCenter(fd);
@@ -242,6 +282,8 @@ void BrainTree::initEntry()
     setEntry<bool>("assist_chase", false);
     setEntry<bool>("assist_kick", false);
     setEntry<bool>("go_manual", false);
+    setEntry<bool>("goalie_free_ball", false);
+    setEntry<bool>("goalie_urgent_clear", false);
 
     setEntry<bool>("we_just_scored", false);
     setEntry<bool>("wait_for_opponent_kickoff", false);
@@ -612,24 +654,23 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
 
-    const double longRangeThreshold = 1.0;
-    const double turnThreshold = 0.4;
     const double vthetaLimit = 1.2;
-    const bool avoidObstacle = false;
-    brain->client->moveToPoseOnField2(
-        targetPose.x,
-        targetPose.y,
-        targetPose.theta,
-        longRangeThreshold,
-        turnThreshold,
-        vxLimit,
-        vyLimit,
-        vthetaLimit,
-        distTolerance,
-        distTolerance,
-        thetaTolerance,
-        avoidObstacle
-    );
+    auto targetPose_r = brain->data->field2robot(targetPose);
+
+    // Preserve the existing blocking pose and orientation, but translate in the
+    // robot frame so it can backpedal to the line instead of turn-forward-turn.
+    double vx = targetPose_r.x;
+    double vy = targetPose_r.y;
+    double vtheta = deltaTheta * 2.0;
+    if (fabs(deltaTheta) > 0.6) {
+        vx *= 0.6;
+        vy *= 0.6;
+    }
+
+    vx = cap(vx, vxLimit, -vxLimit);
+    vy = cap(vy, vyLimit, -vyLimit);
+    vtheta = cap(vtheta, vthetaLimit, -vthetaLimit);
+    brain->client->setVelocity(vx, vy, vtheta);
     return NodeStatus::SUCCESS;
 }
 
@@ -965,7 +1006,11 @@ NodeStatus GoalieDecide::tick()
     getInput("adjust_angle_tolerance", adjustAngleTolerance);
     double adjustYTolerance;
     getInput("adjust_y_tolerance", adjustYTolerance);
-    string lastDecision, position;
+    double defensiveThresholdRatio;
+    getInput("defensive_threshold_ratio", defensiveThresholdRatio);
+    double freeBallRadius;
+    getInput("free_ball_radius", freeBallRadius);
+    string lastDecision;
     getInput("decision_in", lastDecision);
 
     double kickDir = calcGoalieClearDir(brain->data->ball.posToField, brain->config->fieldDimensions);
@@ -984,6 +1029,22 @@ NodeStatus GoalieDecide::tick()
         && brain->data->ballDetected
         && ballRange < 1.0;
 
+    auto fd = brain->config->fieldDimensions;
+    const double nearPenaltyAreaMargin = 0.35;
+    const double defensiveThresholdX = calcGoalieDefensiveThresholdX(fd, defensiveThresholdRatio) + nearPenaltyAreaMargin;
+    const bool ballWithinDefensiveThreshold = brain->data->ball.posToField.x <= defensiveThresholdX;
+    const bool ballFree = isBallFreeForGoalie(brain, freeBallRadius);
+    const bool amFastestToBall = brain->data->tmMyCostRank == 0;
+    const bool amFastEnoughToBall = brain->data->tmMyCost <= brain->config->get_ball_control_cost_threshold();
+    const bool shouldEmergencyClear = ballWithinDefensiveThreshold
+        && ballFree
+        && amFastestToBall
+        && amFastEnoughToBall
+        && brain->data->ballDetected;
+
+    brain->tree->setEntry<bool>("goalie_free_ball", ballFree);
+    brain->tree->setEntry<bool>("goalie_urgent_clear", shouldEmergencyClear);
+
     string newDecision;
     bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
     bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
@@ -991,20 +1052,24 @@ NodeStatus GoalieDecide::tick()
     {
         newDecision = "find";
     }
-    else if (brain->data->ball.posToField.x > 0 - static_cast<double>(lastDecision == "retreat"))
-    {
-        newDecision = "retreat";
-    } else if (ballRange > chaseRangeThreshold * (lastDecision == "chase" ? 0.9 : 1.0))
-    {
-        newDecision = "chase";
-    }
     else if (canClearNow)
     {
         newDecision = "kick";
     }
-    else
+    else if (
+        shouldEmergencyClear
+        && ballRange > chaseRangeThreshold * (lastDecision == "chase" ? 0.9 : 1.0)
+    )
+    {
+        newDecision = "chase";
+    }
+    else if (shouldEmergencyClear)
     {
         newDecision = "adjust";
+    }
+    else
+    {
+        newDecision = "retreat";
     }
 
     setOutput("decision_out", newDecision);
