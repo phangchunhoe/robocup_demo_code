@@ -81,7 +81,7 @@
                               dist -> Stopping Distance
                               safe_dist -> Avoid Collisions
                         -->
-                        <Chase   _while="decision == 'chase'"  vx_limit="0.9"  vy_limit="0.2"  vtheta_limit="1.0"  dist="0.1" safe_dist="0.5" />
+                        <StrikerChase   _while="decision == 'chase'"  vx_limit="0.9"  vy_limit="0.2"  vtheta_limit="1.0"  dist="0.1" safe_dist="0.5" />
 
                         <!-- 
                         AUTO VISUAL KICK

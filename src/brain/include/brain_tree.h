@@ -270,6 +270,38 @@ private:
     double _dir = 1.0; 
 };
 
+class StrikerChase : public SyncActionNode
+{
+public:
+    StrikerChase(const string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
+
+    static PortsList providedPorts()
+    {
+        return Chase::providedPorts();
+    }
+
+    NodeStatus tick() override;
+
+private:
+    Brain *brain;
+};
+
+class GoalieChase : public SyncActionNode
+{
+public:
+    GoalieChase(const string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
+
+    static PortsList providedPorts()
+    {
+        return Chase::providedPorts();
+    }
+
+    NodeStatus tick() override;
+
+private:
+    Brain *brain;
+};
+
 
 class Adjust : public SyncActionNode
 {
