@@ -12,6 +12,9 @@
 #include <fstream>
 #include <ios>
 
+// Groot Configuration
+#include"behaviortree_cpp/loggers/groot2_publisher.h"
+
 namespace {
 Point2D getOwnGoalCenter(const FieldDimensions &fd)
 {
@@ -107,6 +110,9 @@ void BrainTree::init()
 
     factory.registerBehaviorTreeFromFile(brain->config->get_tree_file_path());
     tree = factory.createTree("MainTree");
+
+    // Groot Configuration
+    groot_publisher_ = std::make_unique<BT::Groot2Publisher>(tree,1667);
 
     // After construction, initialize blackboard entries
     initEntry();

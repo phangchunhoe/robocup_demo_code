@@ -7,6 +7,11 @@
 
 #include "types.h"
 
+// Groot Connectivity
+#include<memory>
+#include"behaviortree_cpp/loggers/groot2_publisher.h"
+#include"behaviortree_cpp/loggers/bt_file_logger_v2.h"
+
 class Brain;
 
 using namespace std;
@@ -41,6 +46,8 @@ private:
     Tree tree;
     Brain *brain;
 
+    std::unique_ptr<BT::Groot2Publisher>groot_publisher_;
+    std::unique_ptr<BT::FileLogger2>bt_file_logger_;
     /**
      * Initialize entries in the blackboard. When adding new fields, set a default value here.
      */
