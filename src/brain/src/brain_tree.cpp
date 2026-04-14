@@ -679,12 +679,20 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     const double vthetaLimit = 1.2;
     auto targetPose_r = brain->data->field2robot(targetPose);
     const bool backpedalHome = returnHome && targetPose_r.x < -distTolerance;
+    const double lateralDeadband = returnHome ? 0.18 : 0.15;
+    const double headingDeadband = 0.12;
 
     // Preserve the existing blocking pose and orientation, but translate in the
     // robot frame so it can backpedal to the line instead of turn-forward-turn.
     double vx = targetPose_r.x;
     double vy = targetPose_r.y;
     double vtheta = deltaTheta * 2.0;
+    if (fabs(vy) < lateralDeadband) {
+        vy = 0.0;
+    }
+    if (fabs(deltaTheta) < headingDeadband) {
+        vtheta = 0.0;
+    }
     if (fabs(deltaTheta) > 0.6) {
         vx *= 0.6;
         vy *= 0.6;
@@ -694,10 +702,10 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double effectiveVyLimit = vyLimit;
     double effectiveVthetaLimit = vthetaLimit;
     if (backpedalHome) {
-        vx *= 2.0;
+        vx *= 1.5;
         vy *= 0.25;
         vtheta = 0.0;
-        effectiveVxLimit = max(effectiveVxLimit, 1.0);
+        effectiveVxLimit = max(effectiveVxLimit, 0.8);
         effectiveVyLimit = max(effectiveVyLimit, 0.15);
     }
 
@@ -1195,13 +1203,13 @@ tuple<double, double, double> Kick::_calcSpeed() {
 NodeStatus Kick::onStart()
 {
     _minRange = brain->data->ball.range;
-    _speed = 0.5;
+    string role = brain->tree->getEntry<string>("player_role");
+    _speed = role == "goal_keeper" ? 0.35 : 0.5;
     _startTime = brain->get_clock()->now();
 
 
     bool avoidPushing = brain->config->get_avoid_during_kick();
     double kickAoSafeDist = brain->config->get_kick_ao_safe_dist();
-    string role = brain->tree->getEntry<string>("player_role");
     if (
         avoidPushing
         && (role != "goal_keeper")
@@ -1214,6 +1222,9 @@ NodeStatus Kick::onStart()
 
     // Publish movement command
     double angle = brain->data->ball.yawToRobot;
+    if (role == "goal_keeper" && fabs(angle) < 0.20) {
+        angle = 0.0;
+    }
     brain->client->crabWalk(angle, _speed);
     return NodeStatus::RUNNING;
 }
@@ -1266,9 +1277,13 @@ NodeStatus Kick::onRunning()
 
 
     if (brain->data->ballDetected) { 
+        string role = brain->tree->getEntry<string>("player_role");
         double angle = brain->data->ball.yawToRobot;
+        if (role == "goal_keeper" && fabs(angle) < 0.20) {
+            angle = 0.0;
+        }
         double speed = getInput<double>("speed_limit").value();
-        _speed += 0.1; 
+        _speed += role == "goal_keeper" ? 0.04 : 0.1;
         speed = min(speed, _speed);
         brain->client->crabWalk(angle, speed);
     }

@@ -55,7 +55,7 @@
                         decision_in="{decision}"
                         chase_threshold="3.0"
                         adjust_angle_tolerance="0.18"
-                        adjust_y_tolerance="0.12"
+                        adjust_y_tolerance="0.18"
                         defensive_threshold_ratio="0.0"
                         free_ball_radius="0.9"
                         return_home_x_margin="0.35"
