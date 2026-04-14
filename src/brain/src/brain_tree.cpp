@@ -660,6 +660,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     Pose2D targetPose = returnHome
         ? calcGoalieHomePose(fd)
         : calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
+    targetPose.x = min(targetPose.x, 0.0);
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
@@ -677,7 +678,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     const double vthetaLimit = 1.2;
     auto targetPose_r = brain->data->field2robot(targetPose);
-    const bool backpedalHome = returnHome && !brain->data->ballDetected && targetPose_r.x < -distTolerance;
+    const bool backpedalHome = returnHome && targetPose_r.x < -distTolerance;
 
     // Preserve the existing blocking pose and orientation, but translate in the
     // robot frame so it can backpedal to the line instead of turn-forward-turn.
@@ -693,11 +694,11 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double effectiveVyLimit = vyLimit;
     double effectiveVthetaLimit = vthetaLimit;
     if (backpedalHome) {
-        vx *= 1.6;
-        vy *= 0.35;
-        vtheta *= 0.6;
-        effectiveVxLimit = max(effectiveVxLimit, 0.8);
-        effectiveVyLimit = max(effectiveVyLimit, 0.2);
+        vx *= 2.0;
+        vy *= 0.25;
+        vtheta = 0.0;
+        effectiveVxLimit = max(effectiveVxLimit, 1.0);
+        effectiveVyLimit = max(effectiveVyLimit, 0.15);
     }
 
     vx = cap(vx, effectiveVxLimit, -effectiveVxLimit);
@@ -1089,7 +1090,8 @@ NodeStatus GoalieDecide::tick()
         && amFastestToBall
         && amFastEnoughToBall
         && brain->data->ballDetected;
-    const bool shouldReturnHome = physicallyLostBall || tooFarFromHome;
+    const bool crossedHalfCourt = brain->data->robotPoseToField.x >= 0.0;
+    const bool shouldReturnHome = crossedHalfCourt || physicallyLostBall || tooFarFromHome;
 
     brain->tree->setEntry<bool>("goalie_free_ball", ballFree);
     brain->tree->setEntry<bool>("goalie_urgent_clear", shouldEmergencyClear);
