@@ -65,8 +65,8 @@
                      <!-- The Below 2 is to ensure that they return to goal -->
                      <!-- Ensures that they return to goal even if they do not see the ball. -->
                      <!-- Strikers only focus on finding ball for offense -->
-                     <GoToGoalBlockingPosition _while="decision=='find'" theta_tolerance="0.6" />
-                     <GoToGoalBlockingPosition _while="decision == 'retreat'" theta_tolerance="0.6" />
+                     <GoToGoalBlockingPosition _while="decision=='find'" dist_tolerance="0.25" theta_tolerance="0.6" backward_speed_scale="1.5" />
+                     <GoToGoalBlockingPosition _while="decision == 'retreat'" dist_tolerance="0.25" theta_tolerance="0.6" backward_speed_scale="1.5" />
 
                      <!-- Goalkeeper can chase, but they should return back to goal -->
                      <GoalieChase   _while="decision == 'chase'"  vx_limit="1.2"  vy_limit="0.4"  vtheta_limit="1.2"  dist="0.1" safe_dist="0.5" />

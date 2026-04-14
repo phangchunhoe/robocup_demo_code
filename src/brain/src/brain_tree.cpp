@@ -649,6 +649,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double distTolerance = getInput<double>("dist_tolerance").value();
     double thetaTolerance = getInput<double>("theta_tolerance").value();
     double distToGoalline = getInput<double>("dist_to_goalline").value();
+    double backwardSpeedScale = max(0.1, getInput<double>("backward_speed_scale").value());
 
     auto fd = brain->config->fieldDimensions;
     auto ballPos = brain->data->ball.posToField;
@@ -660,6 +661,10 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     Pose2D targetPose = returnHome
         ? calcGoalieHomePose(fd)
         : calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
+    if (returnHome) {
+        // Keep the current body heading when returning so the goalie backpedals instead of turning first.
+        targetPose.theta = robotPose.theta;
+    }
     targetPose.x = min(targetPose.x, 0.0);
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
@@ -702,10 +707,10 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double effectiveVyLimit = vyLimit;
     double effectiveVthetaLimit = vthetaLimit;
     if (backpedalHome) {
-        vx *= 1.5;
+        vx *= backwardSpeedScale;
         vy *= 0.25;
         vtheta = 0.0;
-        effectiveVxLimit = max(effectiveVxLimit, 0.8);
+        effectiveVxLimit = max(effectiveVxLimit, 0.8 * backwardSpeedScale / 1.5);
         effectiveVyLimit = max(effectiveVyLimit, 0.15);
     }
 

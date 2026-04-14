@@ -531,6 +531,7 @@ public:
             InputPort<double>("vx_limit", 0.1, "x speed limit"),
             InputPort<double>("vy_limit", 0.1, "y speed limit"),
             InputPort<double>("dist_to_goalline", 2.5, "Distance from the robot to the goal line"),
+            InputPort<double>("backward_speed_scale", 1.5, "Scale factor for backward speed when retreating to the home pose"),
         };
     }
 
