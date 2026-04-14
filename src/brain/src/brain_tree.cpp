@@ -130,6 +130,19 @@ double calcGoalieDefensiveThresholdX(const FieldDimensions &fd, double defensive
     return penaltyAreaFrontX + ratio * (0.0 - penaltyAreaFrontX);
 }
 
+bool getVisibleOwnGoalLine(Brain *brain, FieldLine &bestLine)
+{
+    double bestConfidence = 0.0;
+    for (const auto &line : brain->data->getFieldLines()) {
+        if (line.type != LineType::GoalLine || line.half != LineHalf::Self) continue;
+        if (brain->msecsSince(line.timePoint) > 500) continue;
+        if (line.confidence <= bestConfidence) continue;
+        bestConfidence = line.confidence;
+        bestLine = line;
+    }
+    return bestConfidence > 0.0;
+}
+
 bool isBallFreeForGoalie(Brain *brain, double freeBallRadius)
 {
     const auto ballPos = brain->data->ball.posToField;
@@ -667,7 +680,14 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     }
     targetPose.x = min(targetPose.x, 0.0);
 
-    double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
+    auto targetPose_r = brain->data->field2robot(targetPose);
+    FieldLine ownGoalLine;
+    if (returnHome && getVisibleOwnGoalLine(brain, ownGoalLine)) {
+        const double distToOwnGoalLine = -pointPerpDistToLine(Point2D{0.0, 0.0}, ownGoalLine.posToRobot);
+        targetPose_r.x = fd.goalAreaLength - distToOwnGoalLine;
+    }
+
+    double dist = norm(targetPose_r.x, targetPose_r.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
     if ( // Considered to have reached the target position
         dist < distTolerance
@@ -682,7 +702,6 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     getInput("vy_limit", vyLimit);
 
     const double vthetaLimit = 1.2;
-    auto targetPose_r = brain->data->field2robot(targetPose);
     const bool backpedalHome = returnHome && targetPose_r.x < -distTolerance;
     const double lateralDeadband = returnHome ? 0.18 : 0.15;
     const double headingDeadband = 0.12;
