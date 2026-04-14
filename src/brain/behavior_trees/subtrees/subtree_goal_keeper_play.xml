@@ -59,7 +59,7 @@
                         defensive_threshold_ratio="0.0"
                         free_ball_radius="0.9"
                         return_home_x_margin="0.35"
-                        visual_ball_timeout_msec="1200"
+                        visual_ball_timeout_msec="10000"
                      />
 
                      <!-- The Below 2 is to ensure that they return to goal -->

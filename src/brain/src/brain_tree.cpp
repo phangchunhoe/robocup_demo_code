@@ -170,24 +170,31 @@ Pose2D calcGoalieHomePose(const FieldDimensions &fd)
 Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, double distToGoalline, const string &role)
 {
     auto goalCenter = getOwnGoalCenter(fd);
+    auto homePose = calcGoalieHomePose(fd);
     const double minGoalClearance = 0.2;
     const double minBallClearance = role == "striker" ? 0.8 : 0.5;
-    const double shotDist = max(norm(ballPos.x - goalCenter.x, ballPos.y - goalCenter.y), 1e-5);
-    const double blockDir = calcGoalieClearDir(ballPos, fd);
-
-    double blockDist = min(distToGoalline, max(minGoalClearance, shotDist - minBallClearance));
+    const double configuredForwardX = goalCenter.x + max(minGoalClearance, distToGoalline);
+    const double maxForwardX = min(homePose.x, configuredForwardX);
+    double targetX = maxForwardX;
+    if (ballPos.x < maxForwardX + minBallClearance) {
+        targetX = ballPos.x - minBallClearance;
+    }
+    targetX = cap(targetX, maxForwardX, goalCenter.x + minGoalClearance);
 
     Pose2D targetPose;
-    targetPose.x = goalCenter.x + blockDist * cos(blockDir);
-    targetPose.y = goalCenter.y + blockDist * sin(blockDir);
+    targetPose.x = targetX;
+    if (fabs(ballPos.x - goalCenter.x) < 1e-5) {
+        targetPose.y = 0.0;
+    } else {
+        const double slope = (ballPos.y - goalCenter.y) / (ballPos.x - goalCenter.x);
+        targetPose.y = goalCenter.y + slope * (targetPose.x - goalCenter.x);
+    }
 
     const double maxAbsY = role == "striker"
         ? fd.goalWidth / 2.0
         : max(0.2, fd.goalAreaWidth / 2.0 - 0.2);
     targetPose.y = cap(targetPose.y, maxAbsY, -maxAbsY);
 
-    const double maxX = goalCenter.x + max(distToGoalline, fd.goalAreaLength + 0.2);
-    targetPose.x = cap(targetPose.x, maxX, goalCenter.x + minGoalClearance);
     targetPose.theta = atan2(ballPos.y - targetPose.y, ballPos.x - targetPose.x);
     return targetPose;
 }
@@ -354,6 +361,7 @@ NodeStatus CamTrackBall::tick()
     const double pixToleranceY = brain->config->cameraImageHeight * 3 / 10.;
     const double xCenter = brain->config->cameraImageWidth / 2;
     const double yCenter = brain->config->cameraImageHeight / 2; 
+    const double memoryTrackBlend = 0.2;
 
 
     bool iSeeBall = brain->data->ballDetected;
@@ -365,12 +373,12 @@ NodeStatus CamTrackBall::tick()
     if (!iSeeBall)
     { 
         if (iKnowBallPos) {
-            // moving with smooth to last known ball position from vision
-            pitch = brain->data->headPitch + (brain->data->ball.pitchToRobot - brain->data->headPitch) * 0.01;
-            yaw = brain->data->headYaw + (brain->data->ball.yawToRobot - brain->data->headYaw) * 0.01;
+            // Snap back to the last known ball direction fast enough to reacquire it.
+            pitch = brain->data->headPitch + (brain->data->ball.pitchToRobot - brain->data->headPitch) * memoryTrackBlend;
+            yaw = brain->data->headYaw + (brain->data->ball.yawToRobot - brain->data->headYaw) * memoryTrackBlend;
         } else if (tmBallPosReliable) {
-            pitch =  brain->data->headPitch + (brain->data->tmBall.pitchToRobot - brain->data->headPitch) * 0.01;
-            yaw = brain->data->headYaw + (brain->data->tmBall.yawToRobot - brain->data->headYaw) * 0.01;
+            pitch =  brain->data->headPitch + (brain->data->tmBall.pitchToRobot - brain->data->headPitch) * memoryTrackBlend;
+            yaw = brain->data->headYaw + (brain->data->tmBall.yawToRobot - brain->data->headYaw) * memoryTrackBlend;
         } else {
             brain->log->error("CamTrackBall", "reached impossible condition");
         }
@@ -669,6 +677,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     const double vthetaLimit = 1.2;
     auto targetPose_r = brain->data->field2robot(targetPose);
+    const bool backpedalHome = returnHome && !brain->data->ballDetected && targetPose_r.x < -distTolerance;
 
     // Preserve the existing blocking pose and orientation, but translate in the
     // robot frame so it can backpedal to the line instead of turn-forward-turn.
@@ -680,9 +689,20 @@ NodeStatus GoToGoalBlockingPosition::tick() {
         vy *= 0.6;
     }
 
-    vx = cap(vx, vxLimit, -vxLimit);
-    vy = cap(vy, vyLimit, -vyLimit);
-    vtheta = cap(vtheta, vthetaLimit, -vthetaLimit);
+    double effectiveVxLimit = vxLimit;
+    double effectiveVyLimit = vyLimit;
+    double effectiveVthetaLimit = vthetaLimit;
+    if (backpedalHome) {
+        vx *= 1.6;
+        vy *= 0.35;
+        vtheta *= 0.6;
+        effectiveVxLimit = max(effectiveVxLimit, 0.8);
+        effectiveVyLimit = max(effectiveVyLimit, 0.2);
+    }
+
+    vx = cap(vx, effectiveVxLimit, -effectiveVxLimit);
+    vy = cap(vy, effectiveVyLimit, -effectiveVyLimit);
+    vtheta = cap(vtheta, effectiveVthetaLimit, -effectiveVthetaLimit);
     brain->client->setVelocity(vx, vy, vtheta);
     return NodeStatus::SUCCESS;
 }
@@ -819,8 +839,16 @@ NodeStatus Adjust::tick()
         st = st_near;
     }
 
+    static double orbitDir = 1.0;
+    const double orbitSwitchThreshold = 0.12;
+    if (deltaDir > orbitSwitchThreshold) {
+        orbitDir = -1.0;
+    } else if (deltaDir < -orbitSwitchThreshold) {
+        orbitDir = 1.0;
+    }
+
     double theta_robot_f = brain->data->robotPoseToField.theta; 
-    double thetat_r = dir_rb_f + M_PI / 2 * (deltaDir > 0 ? -1.0 : 1.0) - theta_robot_f; 
+    double thetat_r = dir_rb_f + M_PI / 2 * orbitDir - theta_robot_f;
     double thetar_r = dir_rb_f - theta_robot_f; 
 
     vx = st * cos(thetat_r) + sr * cos(thetar_r); 
