@@ -401,6 +401,9 @@ NodeStatus CamFindBall::tick()
 
 NodeStatus CamScanField::tick()
 {
+    brain->log->strategy('--------------------------');
+    brain->log->strategy('       Starting Game      ');
+    brain->log->strategy('--------------------------');
     auto sec = brain->get_clock()->now().seconds();
     auto msec = static_cast<unsigned long long>(sec * 1000);
     double lowPitch, highPitch, leftYaw, rightYaw;
@@ -1188,13 +1191,26 @@ NodeStatus GoalieDecide::tick()
     if (newDecision != lastDecision) {
         brain->log->strategy(
             "GoalieDecide",
-            format("decision: %s -> %s | ballRange=%.2f ballYaw=%.2f deltaDir=%.2f canClear=%d "
-                   "goalieTimeToBall=%.2f teammateBestTimeToBall=%.2f ballObservationAge=%.2f "
-                   "ballDistanceToOwnGoal=%.2f numDefendersCoveringGoal=%d "
-                   "isOpponentSetPlayOrKickoff=%d isWithinSafeGoalieZone=%d "
-                   "goalieChaseScoreRaw=%.3f goalieChaseScoreBiased=%.3f "
-                   "stopChasingThreshold=%.2f startChasingThreshold=%.2f "
-                   "currentlyChasingBeforeBias=%d currentlyChasingAfterHysteresis=%d",
+            format(
+                "decision: %s -> %s\n"
+                "ballRange: %.2f\n"
+                "ballYaw: %.2f\n"
+                "deltaDir: %.2f\n"
+                "canClear: %d\n"
+                "goalieTimeToBall: %.2f\n"
+                "teammateBestTimeToBall: %.2f\n"
+                "ballObservationAge: %.2f\n"
+                "ballDistanceToOwnGoal: %.2f\n"
+                "numDefendersCoveringGoal: %d\n"
+                "isOpponentSetPlayOrKickoff: %d\n"
+                "isWithinSafeGoalieZone: %d\n"
+                "goalieChaseScoreRaw: %.3f\n"
+                "goalieChaseScoreBiased: %.3f\n"
+                "stopChasingThreshold: %.2f\n"
+                "startChasingThreshold: %.2f\n"
+                "currentlyChasingBeforeBias: %d\n"
+                "currentlyChasingAfterHysteresis: %d",
+                
                 lastDecision.c_str(),
                 newDecision.c_str(),
                 ballRange,
@@ -1213,7 +1229,9 @@ NodeStatus GoalieDecide::tick()
                 stopChasingThreshold,
                 startChasingThreshold,
                 currentlyChasingBeforeBias,
-                currentlyChasingAfterHysteresis));
+                currentlyChasingAfterHysteresis
+            )
+        );    
     }
 
     setOutput("decision_out", newDecision);
