@@ -75,6 +75,7 @@ Brain::Brain() : rclcpp::Node("brain_node")
     declare_parameter<double>("strategy.move_block_msecs", 2000.0);
     declare_parameter<bool>("strategy.enable_auto_visual_kick", false);
     declare_parameter<bool>("strategy.enable_auto_visual_defend", false);
+    declare_parameter<string>("strategy.log_path", "strategy.log");
 
     declare_parameter<bool>("strategy.power_shoot.enable", false);
     declare_parameter<bool>("strategy.power_shoot.use_for_kickoff", false);

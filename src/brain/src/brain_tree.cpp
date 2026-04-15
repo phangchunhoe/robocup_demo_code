@@ -932,6 +932,20 @@ NodeStatus StrikerDecide::tick() {
         newDecision = "adjust";
     }
 
+    if (newDecision != lastDecision) {
+        brain->log->strategy(
+            "StrikerDecide",
+            format("decision: %s -> %s | lead=%d ballRange=%.2f ballYaw=%.2f kickDir=%.2f deltaDir=%.2f angleGood=%d",
+                lastDecision.c_str(),
+                newDecision.c_str(),
+                brain->data->tmImLead,
+                ballRange,
+                ballYaw,
+                kickDir,
+                deltaDir,
+                angleGoodForKick));
+    }
+
     setOutput("decision_out", newDecision);
     
     // Publish player_decide message
@@ -1005,6 +1019,18 @@ NodeStatus GoalieDecide::tick()
     else
     {
         newDecision = "adjust";
+    }
+
+    if (newDecision != lastDecision) {
+        brain->log->strategy(
+            "GoalieDecide",
+            format("decision: %s -> %s | ballRange=%.2f ballYaw=%.2f deltaDir=%.2f canClear=%d",
+                lastDecision.c_str(),
+                newDecision.c_str(),
+                ballRange,
+                ballYaw,
+                deltaDir,
+                canClearNow));
     }
 
     setOutput("decision_out", newDecision);
