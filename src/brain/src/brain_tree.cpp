@@ -982,7 +982,10 @@ NodeStatus GoalieDecide::tick()
     string lastDecision, position;
     getInput("decision_in", lastDecision);
 
-    double kickDir = calcGoalieClearDir(brain->data->ball.posToField, brain->config->fieldDimensions);
+    bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
+    bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+    Point decisionBallPosToField = iKnowBallPos ? brain->data->ball.posToField : brain->data->tmBall.posToField;
+    double kickDir = calcGoalieClearDir(decisionBallPosToField, brain->config->fieldDimensions);
     brain->data->kickDir = kickDir;
     brain->data->kickType = "block";
     double dir_rb_f = brain->data->robotBallAngleToField;
@@ -998,19 +1001,25 @@ NodeStatus GoalieDecide::tick()
         && brain->data->ballDetected
         && ballRange < 1.0;
 
+    const double chaseCommitBias = 0.10;
+    const double stopChasingThreshold = 0.45;
+    const double startChasingThreshold = 0.55;
+    double goalieTimeToBall = -1.0;
+    double teammateBestTimeToBall = -1.0;
+    double ballObservationAge = -1.0;
+    double ballDistanceToOwnGoal = -1.0;
+    int numDefendersCoveringGoal = -1;
+    bool isOpponentSetPlayOrKickoff = false;
+    bool isWithinSafeGoalieZone = false;
+    double goalieChaseScoreRaw = -1.0;
+    double goalieChaseScoreBiased = -1.0;
+    bool currentlyChasingBeforeBias = false;
+    bool currentlyChasingAfterHysteresis = false;
+
     string newDecision;
-    bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
-    bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
     if (!(iKnowBallPos || tmBallPosReliable))
     {
         newDecision = "find";
-    }
-    else if (brain->data->ball.posToField.x > 0 - static_cast<double>(lastDecision == "retreat"))
-    {
-        newDecision = "retreat";
-    } else if (ballRange > chaseRangeThreshold * (lastDecision == "chase" ? 0.9 : 1.0))
-    {
-        newDecision = "chase";
     }
     else if (canClearNow)
     {
@@ -1018,19 +1027,193 @@ NodeStatus GoalieDecide::tick()
     }
     else
     {
-        newDecision = "adjust";
+        auto clamp01 = [](double x) {
+            if (x < 0.0) return 0.0;
+            if (x > 1.0) return 1.0;
+            return x;
+        };
+
+        auto computeGoalieChaseScore = [&](double goalieTimeToBall,
+                                           double teammateBestTimeToBall,
+                                           double ballObservationAge,
+                                           double ballDistanceToOwnGoal,
+                                           int numDefendersCoveringGoal,
+                                           bool isOpponentSetPlayOrKickoff,
+                                           bool isWithinSafeGoalieZone) {
+            const auto &fd = brain->config->fieldDimensions;
+            const double idealInterceptDistance = fd.goalAreaLength + 0.8;
+            const double allowedDistanceRange = fd.penaltyAreaLength + 1.0;
+
+            double timeAdvantageScore = clamp01(
+                (teammateBestTimeToBall - goalieTimeToBall - 0.75) / 0.75
+            );
+
+            double ballPositionScore = clamp01(
+                1.0 - fabs(ballDistanceToOwnGoal - idealInterceptDistance) / allowedDistanceRange
+            );
+
+            double goalCoverageScore = clamp01(numDefendersCoveringGoal / 2.0);
+
+            double ballConfidenceScore = ballObservationAge <= 2.0
+                ? 1.0
+                : (1.0 - (ballObservationAge - 2.0) / 2.0);
+            ballConfidenceScore = clamp01(ballConfidenceScore);
+
+            double dangerStatePenalty = isOpponentSetPlayOrKickoff ? 1.0 : 0.0;
+            double outOfPositionPenalty = isWithinSafeGoalieZone ? 0.0 : 1.0;
+
+            return (
+                0.35 * timeAdvantageScore +
+                0.25 * ballPositionScore +
+                0.20 * goalCoverageScore +
+                0.20 * ballConfidenceScore
+            ) / (
+                1.0 +
+                1.5 * dangerStatePenalty +
+                0.8 * outOfPositionPenalty
+            );
+        };
+
+        const auto &fd = brain->config->fieldDimensions;
+        Point ballPosToField = decisionBallPosToField;
+        int selfIdx = brain->config->get_player_id() - 1;
+
+        goalieTimeToBall = brain->data->tmMyCost;
+        teammateBestTimeToBall = goalieTimeToBall + 2.0;
+        bool foundTeammateBallCost = false;
+        numDefendersCoveringGoal = 0;
+
+        const double coverMaxX = -fd.length / 2.0 + fd.penaltyAreaLength + 0.8;
+        const double coverMaxY = fd.penaltyAreaWidth / 2.0 + 0.5;
+        for (int i = 0; i < HL_MAX_NUM_PLAYERS; i++) {
+            if (i == selfIdx) continue;
+
+            const auto &status = brain->data->tmStatus[i];
+            if (!status.isAlive) continue;
+            if (status.role == "goal_keeper") continue;
+
+            if (status.cost < teammateBestTimeToBall) {
+                teammateBestTimeToBall = status.cost;
+                foundTeammateBallCost = true;
+            }
+
+            if (
+                status.robotPoseToField.x < coverMaxX &&
+                fabs(status.robotPoseToField.y) < coverMaxY
+            ) {
+                numDefendersCoveringGoal++;
+            }
+        }
+        if (!foundTeammateBallCost) {
+            teammateBestTimeToBall = goalieTimeToBall + 2.0;
+        }
+
+        ballObservationAge = brain->msecsSince(brain->data->ball.timePoint) / 1000.0;
+        if (!iKnowBallPos && tmBallPosReliable) {
+            double freshestTeammateBallAge = 1e9;
+            for (int i = 0; i < HL_MAX_NUM_PLAYERS; i++) {
+                if (i == selfIdx) continue;
+
+                const auto &status = brain->data->tmStatus[i];
+                if (!status.isAlive) continue;
+                if (!(status.ballDetected || status.ballLocationKnown)) continue;
+
+                double teammateBallAge = brain->msecsSince(status.timeLastCom) / 1000.0;
+                if (teammateBallAge < freshestTeammateBallAge) {
+                    freshestTeammateBallAge = teammateBallAge;
+                }
+            }
+            if (freshestTeammateBallAge < 1e8) {
+                ballObservationAge = freshestTeammateBallAge;
+            }
+        }
+
+        ballDistanceToOwnGoal = norm(
+            ballPosToField.x + fd.length / 2.0,
+            ballPosToField.y
+        );
+
+        bool isOpponentKickoff = (
+            (brain->tree->getEntry<string>("gc_game_state") == "SET"
+                || brain->tree->getEntry<string>("gc_game_state") == "READY")
+            && !brain->tree->getEntry<bool>("gc_is_kickoff_side")
+        );
+        bool isOpponentSetPlay = (
+            brain->tree->getEntry<string>("gc_game_sub_state_type") != "NONE"
+            && !brain->tree->getEntry<bool>("gc_is_sub_state_kickoff_side")
+        );
+        isOpponentSetPlayOrKickoff = isOpponentKickoff || isOpponentSetPlay;
+
+        isWithinSafeGoalieZone =
+            brain->data->robotPoseToField.x < (-fd.length / 2.0 + fd.penaltyAreaLength + 0.5)
+            && fabs(brain->data->robotPoseToField.y) < (fd.penaltyAreaWidth / 2.0 + 0.5);
+
+        goalieChaseScoreRaw = computeGoalieChaseScore(
+            goalieTimeToBall,
+            teammateBestTimeToBall,
+            ballObservationAge,
+            ballDistanceToOwnGoal,
+            numDefendersCoveringGoal,
+            isOpponentSetPlayOrKickoff,
+            isWithinSafeGoalieZone
+        );
+
+        bool currentlyChasing = (lastDecision == "chase" || lastDecision == "adjust");
+        currentlyChasingBeforeBias = currentlyChasing;
+        goalieChaseScoreBiased = goalieChaseScoreRaw;
+        if (currentlyChasing) {
+            goalieChaseScoreBiased += chaseCommitBias;
+            if (goalieChaseScoreBiased < stopChasingThreshold) {
+                currentlyChasing = false;
+            }
+        } else {
+            goalieChaseScoreBiased -= chaseCommitBias;
+            if (goalieChaseScoreBiased > startChasingThreshold) {
+                currentlyChasing = true;
+            }
+        }
+        currentlyChasingAfterHysteresis = currentlyChasing;
+
+        if (currentlyChasing) {
+            if (ballRange > chaseRangeThreshold * (lastDecision == "chase" ? 0.9 : 1.0)) {
+                newDecision = "chase";
+            } else {
+                newDecision = "adjust";
+            }
+        } else {
+            newDecision = "retreat";
+        }
     }
 
     if (newDecision != lastDecision) {
         brain->log->strategy(
             "GoalieDecide",
-            format("decision: %s -> %s | ballRange=%.2f ballYaw=%.2f deltaDir=%.2f canClear=%d",
+            format("decision: %s -> %s | ballRange=%.2f ballYaw=%.2f deltaDir=%.2f canClear=%d "
+                   "goalieTimeToBall=%.2f teammateBestTimeToBall=%.2f ballObservationAge=%.2f "
+                   "ballDistanceToOwnGoal=%.2f numDefendersCoveringGoal=%d "
+                   "isOpponentSetPlayOrKickoff=%d isWithinSafeGoalieZone=%d "
+                   "goalieChaseScoreRaw=%.3f goalieChaseScoreBiased=%.3f "
+                   "stopChasingThreshold=%.2f startChasingThreshold=%.2f "
+                   "currentlyChasingBeforeBias=%d currentlyChasingAfterHysteresis=%d",
                 lastDecision.c_str(),
                 newDecision.c_str(),
                 ballRange,
                 ballYaw,
                 deltaDir,
-                canClearNow));
+                canClearNow,
+                goalieTimeToBall,
+                teammateBestTimeToBall,
+                ballObservationAge,
+                ballDistanceToOwnGoal,
+                numDefendersCoveringGoal,
+                isOpponentSetPlayOrKickoff,
+                isWithinSafeGoalieZone,
+                goalieChaseScoreRaw,
+                goalieChaseScoreBiased,
+                stopChasingThreshold,
+                startChasingThreshold,
+                currentlyChasingBeforeBias,
+                currentlyChasingAfterHysteresis));
     }
 
     setOutput("decision_out", newDecision);
