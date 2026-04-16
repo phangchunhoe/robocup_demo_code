@@ -401,9 +401,9 @@ NodeStatus CamFindBall::tick()
 
 NodeStatus CamScanField::tick()
 {
-    brain->log->strategy('--------------------------');
-    brain->log->strategy('       Starting Game      ');
-    brain->log->strategy('--------------------------');
+    brain->log->strategy("--------------------------");
+    brain->log->strategy("       Starting Game      ");
+    brain->log->strategy("--------------------------");
     auto sec = brain->get_clock()->now().seconds();
     auto msec = static_cast<unsigned long long>(sec * 1000);
     double lowPitch, highPitch, leftYaw, rightYaw;
