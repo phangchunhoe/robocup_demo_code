@@ -73,6 +73,10 @@ NodeStatus TickChaseNode(ChaseNodeT &node, Brain *brain, const string &logScope)
         target_f.x = ballPos.x + safeDist * cos(tanTheta);
         target_f.y = ballPos.y + safeDist * sin(tanTheta);
     }
+    if (brain->tree->getEntry<string>("player_role") == "goal_keeper") {
+        const double ownHalfMaxX = -0.05;
+        target_f.x = min(target_f.x, ownHalfMaxX);
+    }
     target_r = brain->data->field2robot(target_f);
 
     double targetDir = atan2(target_r.y, target_r.x);
@@ -140,6 +144,15 @@ Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, d
     const double maxX = goalCenter.x + max(distToGoalline, fd.goalAreaLength + 0.2);
     targetPose.x = cap(targetPose.x, maxX, goalCenter.x + minGoalClearance);
     targetPose.theta = atan2(ballPos.y - targetPose.y, ballPos.x - targetPose.x);
+    return targetPose;
+}
+
+Pose2D calcGoalieHomePose(const FieldDimensions &fd)
+{
+    Pose2D targetPose;
+    targetPose.x = -fd.length / 2.0 + fd.goalAreaLength;
+    targetPose.y = 0.0;
+    targetPose.theta = 0.0;
     return targetPose;
 }
 }
@@ -588,10 +601,13 @@ void GoToFreekickPosition::onHalted() {
 }
 
 NodeStatus GoToGoalBlockingPosition::tick() {
-    
     double distTolerance = getInput<double>("dist_tolerance").value();
     double thetaTolerance = getInput<double>("theta_tolerance").value();
+    double vxLimit = getInput<double>("vx_limit").value();
+    double vyLimit = getInput<double>("vy_limit").value();
+    double vthetaLimit = getInput<double>("vtheta_limit").value();
     double distToGoalline = getInput<double>("dist_to_goalline").value();
+    string mode = getInput<string>("mode").value();
 
     auto fd = brain->config->fieldDimensions;
     auto ballPos = brain->data->ball.posToField;
@@ -599,7 +615,9 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     string curRole = brain->tree->getEntry<string>("player_role");
 
-    Pose2D targetPose = calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
+    Pose2D targetPose = (mode == "home")
+        ? calcGoalieHomePose(fd)
+        : calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
@@ -611,13 +629,41 @@ NodeStatus GoToGoalBlockingPosition::tick() {
         return NodeStatus::SUCCESS;
     }
 
-    double vxLimit, vyLimit;
-    getInput("vx_limit", vxLimit);
-    getInput("vy_limit", vyLimit);
+    if (mode == "home") {
+        auto targetPose_r = brain->data->field2robot(targetPose);
+        double targetDir = atan2(targetPose_r.y, targetPose_r.x);
+        double targetRange = norm(targetPose_r.x, targetPose_r.y);
+
+        double vx = 0.0;
+        double vy = 0.0;
+        double vtheta = 0.0;
+
+        const double turnFirstThreshold = 0.45;
+        const double closeRangeThreshold = 0.45;
+
+        if (targetRange > closeRangeThreshold) {
+            if (fabs(targetDir) > turnFirstThreshold) {
+                vtheta = cap(targetDir * 1.8, vthetaLimit, -vthetaLimit);
+            } else {
+                vx = cap(targetPose_r.x * 1.6, vxLimit, -vxLimit);
+                vtheta = cap(targetDir * 1.4, vthetaLimit, -vthetaLimit);
+            }
+        } else {
+            vx = cap(targetPose_r.x * 2.5, vxLimit, -vxLimit);
+            vy = cap(targetPose_r.y * 2.5, vyLimit, -vyLimit);
+            vtheta = cap(deltaTheta * 1.8, vthetaLimit, -vthetaLimit);
+
+            if (fabs(targetPose_r.x) < distTolerance) vx = 0.0;
+            if (fabs(targetPose_r.y) < distTolerance) vy = 0.0;
+            if (fabs(deltaTheta) < thetaTolerance) vtheta = 0.0;
+        }
+
+        brain->client->setVelocity(vx, vy, vtheta, false, false, false);
+        return NodeStatus::SUCCESS;
+    }
 
     const double longRangeThreshold = 1.0;
     const double turnThreshold = 0.4;
-    const double vthetaLimit = 1.2;
     const bool avoidObstacle = false;
     brain->client->moveToPoseOnField2(
         targetPose.x,
