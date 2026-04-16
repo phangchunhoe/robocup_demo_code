@@ -63,6 +63,7 @@
                      <!-- Strikers only focus on finding ball for offense -->
                      <GoToGoalBlockingPosition _while="decision=='find'" mode="home" dist_tolerance="0.20" theta_tolerance="0.35" vx_limit="1.0" vy_limit="0.4" vtheta_limit="1.2" />
                      <GoToGoalBlockingPosition _while="decision == 'retreat'" mode="home" dist_tolerance="0.20" theta_tolerance="0.35" vx_limit="1.0" vy_limit="0.4" vtheta_limit="1.2" />
+                     <GoToGoalBlockingPosition _while="decision == 'intercept'" mode="intercept" dist_tolerance="0.15" theta_tolerance="0.35" vx_limit="1.0" vy_limit="0.4" vtheta_limit="1.2" />
 
                      <!-- Goalkeeper can chase, but they should return back to goal -->
                      <GoalieChase   _while="decision == 'chase'"  vx_limit="1.0"  vy_limit="0.4"  vtheta_limit="1.2"  dist="0.1" safe_dist="0.5" />

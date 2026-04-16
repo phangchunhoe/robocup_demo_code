@@ -528,7 +528,7 @@ public:
             InputPort<double>("vy_limit", 0.35, "y speed limit"),
             InputPort<double>("vtheta_limit", 1.2, "theta speed limit"),
             InputPort<double>("dist_to_goalline", 2.5, "Distance from the robot to the goal line"),
-            InputPort<string>("mode", "block", "block | home"),
+            InputPort<string>("mode", "block", "block | home | intercept"),
         };
     }
 
