@@ -1,5 +1,7 @@
 #include <cmath>
 #include <cstdlib>
+#include <deque>
+#include <limits>
 #include "brain_tree.h"
 #include "locator.h"
 #include "brain.h"
@@ -156,14 +158,130 @@ Pose2D calcGoalieHomePose(const FieldDimensions &fd)
     return targetPose;
 }
 
-bool isBallFreeForGoalieIntercept(Brain *brain, const Point &ballPos)
+double clampGoalieInterceptY(const FieldDimensions &fd, double y)
 {
-    const double freeBallRadius = 0.70;
+    return cap(y, max(0.2, fd.goalAreaWidth / 2.0 - 0.15), -max(0.2, fd.goalAreaWidth / 2.0 - 0.15));
+}
 
+double estimateGoalieInterceptTravelTime(Brain *brain, const Pose2D &targetPose)
+{
+    auto targetPose_r = brain->data->field2robot(targetPose);
+    const double vxCapability = max(0.45, brain->config->get_vx_limit() * 0.85);
+    const double vyCapability = max(0.35, brain->config->get_vy_limit() * 0.95);
+    const double vthetaCapability = max(0.6, brain->config->get_vtheta_limit() * 0.9);
+
+    const double xTime = fabs(targetPose_r.x) / max(vxCapability, 1e-5);
+    const double yTime = fabs(targetPose_r.y) / max(vyCapability, 1e-5);
+    const double thetaTime = fabs(toPInPI(targetPose.theta - brain->data->robotPoseToField.theta))
+        / max(vthetaCapability, 1e-5);
+
+    // Translation and turning happen together; during intercept the heading error is secondary.
+    return max(xTime, yTime) + min(0.2, thetaTime * 0.2);
+}
+
+bool selectGoalieInterceptPose(Brain *brain,
+                               const Point &ballPos,
+                               const Point &ballVelocity,
+                               double timeToGoalLine,
+                               Pose2D &interceptPose,
+                               double &timeToIntercept)
+{
+    const auto &fd = brain->config->fieldDimensions;
+    const double goalLineX = -fd.length / 2.0;
+    const double minInterceptX = goalLineX + 0.12;
+    const double maxInterceptAdvance = min(fd.penaltyAreaLength - 0.35, fd.goalAreaLength + 1.25);
+    double candidateMaxX = min(ballPos.x - 0.18, goalLineX + maxInterceptAdvance);
+    if (candidateMaxX <= goalLineX + 0.05) {
+        return false;
+    }
+
+    const double requiredSlack = 0.06;
+    double bestSlack = -std::numeric_limits<double>::infinity();
+    Pose2D bestPose;
+    double bestBallTime = -1.0;
+    bool haveBest = false;
+
+    for (double candidateX = candidateMaxX; candidateX >= minInterceptX; candidateX -= 0.15) {
+        const double ballTime = (candidateX - ballPos.x) / ballVelocity.x;
+        if (ballTime <= 0.0 || ballTime > timeToGoalLine) {
+            continue;
+        }
+
+        const double ballY = ballPos.y + ballVelocity.y * ballTime;
+
+        Pose2D candidatePose;
+        candidatePose.x = candidateX;
+        candidatePose.y = clampGoalieInterceptY(fd, ballY);
+        candidatePose.theta = atan2(ballPos.y - candidatePose.y, ballPos.x - candidatePose.x);
+
+        const double robotTime = estimateGoalieInterceptTravelTime(brain, candidatePose);
+        const double slack = ballTime - robotTime;
+
+        if (!haveBest || slack > bestSlack) {
+            bestSlack = slack;
+            bestPose = candidatePose;
+            bestBallTime = ballTime;
+            haveBest = true;
+        }
+
+        if (slack >= requiredSlack) {
+            interceptPose = candidatePose;
+            timeToIntercept = ballTime;
+            return true;
+        }
+    }
+
+    if (!haveBest || bestSlack < -0.12) {
+        return false;
+    }
+
+    interceptPose = bestPose;
+    timeToIntercept = bestBallTime;
+    return true;
+}
+
+bool isRobotContestingFreeBall(const Point2D &robotPos, const Point &ballPos, const Point *ballVelocity)
+{
+    const double immediateContestRadius = 0.32;
+    const double freeBallRadius = 0.55;
+    const double distToBall = norm(robotPos.x - ballPos.x, robotPos.y - ballPos.y);
+    if (distToBall < immediateContestRadius) {
+        return true;
+    }
+    if (distToBall >= freeBallRadius) {
+        return false;
+    }
+
+    if (ballVelocity == nullptr) {
+        return true;
+    }
+
+    const double speed = norm(ballVelocity->x, ballVelocity->y);
+    if (speed < 0.12) {
+        return true;
+    }
+
+    const double ux = ballVelocity->x / speed;
+    const double uy = ballVelocity->y / speed;
+    const double dx = robotPos.x - ballPos.x;
+    const double dy = robotPos.y - ballPos.y;
+    const double alongBallPath = dx * ux + dy * uy;
+    const double lateralOffset = fabs(dx * uy - dy * ux);
+
+    // A robot trailing the rolling ball should not suppress an intercept.
+    if (alongBallPath < -0.15 && lateralOffset < 0.25) {
+        return false;
+    }
+
+    return true;
+}
+
+bool isBallFreeForGoalieIntercept(Brain *brain, const Point &ballPos, const Point *ballVelocity = nullptr)
+{
     auto visibleRobots = brain->data->getRobots();
     for (const auto &robot : visibleRobots) {
         Point2D robotPos{robot.posToField.x, robot.posToField.y};
-        if (norm(robotPos.x - ballPos.x, robotPos.y - ballPos.y) < freeBallRadius) {
+        if (isRobotContestingFreeBall(robotPos, ballPos, ballVelocity)) {
             return false;
         }
     }
@@ -176,7 +294,8 @@ bool isBallFreeForGoalieIntercept(Brain *brain, const Point &ballPos)
         if (!status.isAlive) continue;
         if (status.role == "goal_keeper") continue;
 
-        if (norm(status.robotPoseToField.x - ballPos.x, status.robotPoseToField.y - ballPos.y) < freeBallRadius) {
+        Point2D tmPos{status.robotPoseToField.x, status.robotPoseToField.y};
+        if (isRobotContestingFreeBall(tmPos, ballPos, ballVelocity)) {
             return false;
         }
     }
@@ -196,11 +315,11 @@ struct BallThreatPrediction
     double goalLineY = 0.0;
 };
 
-bool isTrajectoryLaneClear(Brain *brain, const Line &trajectoryLine, const Point &ballPos)
+bool isTrajectoryLaneClear(Brain *brain, const Line &trajectoryLine, const Point &ballPos, const Point *ballVelocity = nullptr)
 {
-    const double laneBlockRadius = 0.45;
+    const double laneBlockRadius = 0.35;
 
-    if (!isBallFreeForGoalieIntercept(brain, ballPos)) {
+    if (!isBallFreeForGoalieIntercept(brain, ballPos, ballVelocity)) {
         return false;
     }
 
@@ -208,6 +327,9 @@ bool isTrajectoryLaneClear(Brain *brain, const Line &trajectoryLine, const Point
     for (const auto &robot : visibleRobots) {
         Point2D robotPos{robot.posToField.x, robot.posToField.y};
         if (pointMinDistToLine(robotPos, trajectoryLine) < laneBlockRadius) {
+            if (!isRobotContestingFreeBall(robotPos, ballPos, ballVelocity)) {
+                continue;
+            }
             return false;
         }
     }
@@ -222,6 +344,9 @@ bool isTrajectoryLaneClear(Brain *brain, const Line &trajectoryLine, const Point
 
         Point2D tmPos{status.robotPoseToField.x, status.robotPoseToField.y};
         if (pointMinDistToLine(tmPos, trajectoryLine) < laneBlockRadius) {
+            if (!isRobotContestingFreeBall(tmPos, ballPos, ballVelocity)) {
+                continue;
+            }
             return false;
         }
     }
@@ -238,33 +363,33 @@ BallThreatPrediction predictGoalieBallThreat(Brain *brain,
     BallThreatPrediction prediction;
 
     double dt = (newerTime - olderTime).nanoseconds() / 1e9;
-    if (dt < 0.06 || dt > 1.0) {
+    if (dt < 0.05 || dt > 0.60) {
         return prediction;
     }
 
     double dx = newerPos.x - olderPos.x;
     double dy = newerPos.y - olderPos.y;
     double displacement = norm(dx, dy);
-    if (displacement < 0.12) {
+    if (displacement < 0.05) {
         return prediction;
     }
 
     prediction.velocity = {dx / dt, dy / dt, 0.0};
     prediction.speed = displacement / dt;
 
-    const double minThreatSpeed = 0.35;
+    const double minThreatSpeed = 0.22;
     if (prediction.speed < minThreatSpeed) {
         return prediction;
     }
-    if (prediction.velocity.x >= -0.10) {
+    if (prediction.velocity.x >= -0.05) {
         return prediction;
     }
 
     const auto &fd = brain->config->fieldDimensions;
     const double goalLineX = -fd.length / 2.0;
-    const double goalLineMargin = 0.25;
+    const double goalLineMargin = 0.35;
     prediction.timeToGoalLine = (goalLineX - newerPos.x) / prediction.velocity.x;
-    if (prediction.timeToGoalLine <= 0.0 || prediction.timeToGoalLine > 4.0) {
+    if (prediction.timeToGoalLine <= 0.0 || prediction.timeToGoalLine > 5.0) {
         return prediction;
     }
 
@@ -273,28 +398,24 @@ BallThreatPrediction predictGoalieBallThreat(Brain *brain,
         return prediction;
     }
 
+    Pose2D interceptPose;
+    if (!selectGoalieInterceptPose(brain, newerPos, prediction.velocity, prediction.timeToGoalLine, interceptPose, prediction.timeToIntercept)) {
+        return prediction;
+    }
+
+    if (prediction.timeToIntercept <= 0.0 || prediction.timeToIntercept > prediction.timeToGoalLine) {
+        return prediction;
+    }
+
+    const double interceptBallY = newerPos.y + prediction.velocity.y * prediction.timeToIntercept;
     Line trajectoryLine{
         newerPos.x, newerPos.y,
-        goalLineX, prediction.goalLineY
+        interceptPose.x, interceptBallY
     };
-    prediction.laneClear = isTrajectoryLaneClear(brain, trajectoryLine, newerPos);
+    prediction.laneClear = isTrajectoryLaneClear(brain, trajectoryLine, newerPos, &prediction.velocity);
     if (!prediction.laneClear) {
         return prediction;
     }
-
-    Pose2D interceptPose = calcGoalieHomePose(fd);
-    if (newerPos.x <= interceptPose.x) {
-        return prediction;
-    }
-
-    prediction.timeToIntercept = (interceptPose.x - newerPos.x) / prediction.velocity.x;
-    if (prediction.timeToIntercept <= 0.0 || prediction.timeToIntercept > 3.5) {
-        return prediction;
-    }
-
-    interceptPose.y = newerPos.y + prediction.velocity.y * prediction.timeToIntercept;
-    interceptPose.y = cap(interceptPose.y, max(0.2, fd.goalAreaWidth / 2.0 - 0.2), -max(0.2, fd.goalAreaWidth / 2.0 - 0.2));
-    interceptPose.theta = atan2(newerPos.y - interceptPose.y, newerPos.x - interceptPose.x);
 
     prediction.interceptPose = interceptPose;
     prediction.valid = true;
@@ -310,12 +431,10 @@ BallThreatPrediction computeGoalieEmergencyIntercept(Brain *brain)
         rclcpp::Time time;
     };
 
-    static BallSample olderSample;
-    static BallSample newerSample;
+    static std::deque<BallSample> samples;
 
     auto resetSamples = [&]() {
-        olderSample = BallSample{};
-        newerSample = BallSample{};
+        samples.clear();
     };
 
     if (!brain->data->ballDetected) {
@@ -335,29 +454,72 @@ BallThreatPrediction computeGoalieEmergencyIntercept(Brain *brain)
     currentSample.pos = ball.posToField;
     currentSample.time = ball.timePoint;
 
-    if (!newerSample.valid) {
-        olderSample = currentSample;
-        newerSample = currentSample;
+    if (!samples.empty()) {
+        double dtFromNewest = (currentSample.time - samples.back().time).nanoseconds() / 1e9;
+        if (dtFromNewest < -1e-3 || dtFromNewest > 2.0) {
+            resetSamples();
+        }
+    }
+
+    if (samples.empty()) {
+        samples.push_back(currentSample);
         return BallThreatPrediction{};
     }
 
-    double dtFromNewest = (currentSample.time - newerSample.time).nanoseconds() / 1e9;
-    if (dtFromNewest < -1e-3 || dtFromNewest > 2.0) {
-        olderSample = currentSample;
-        newerSample = currentSample;
+    double dtFromNewest = (currentSample.time - samples.back().time).nanoseconds() / 1e9;
+    double displacementFromNewest = norm(
+        currentSample.pos.x - samples.back().pos.x,
+        currentSample.pos.y - samples.back().pos.y
+    );
+    if (dtFromNewest > 0.02 && (displacementFromNewest > 0.01 || dtFromNewest > 0.04)) {
+        samples.push_back(currentSample);
+    } else {
+        samples.back() = currentSample;
+    }
+
+    while (samples.size() > 8) {
+        samples.pop_front();
+    }
+    while (!samples.empty()) {
+        double age = (samples.back().time - samples.front().time).nanoseconds() / 1e9;
+        if (age <= 0.55) {
+            break;
+        }
+        samples.pop_front();
+    }
+
+    if (samples.size() < 2) {
         return BallThreatPrediction{};
     }
 
-    if (dtFromNewest > 0.08) {
-        olderSample = newerSample;
-    }
-    newerSample = currentSample;
+    const auto &newestSample = samples.back();
+    BallThreatPrediction bestPrediction;
+    double bestDt = -1.0;
+    for (size_t i = 0; i + 1 < samples.size(); i++) {
+        const auto &olderSample = samples[i];
+        double dt = (newestSample.time - olderSample.time).nanoseconds() / 1e9;
+        if (dt < 0.08 || dt > 0.45) {
+            continue;
+        }
 
-    if (!olderSample.valid || !newerSample.valid) {
-        return BallThreatPrediction{};
+        auto prediction = predictGoalieBallThreat(
+            brain,
+            olderSample.pos,
+            olderSample.time,
+            newestSample.pos,
+            newestSample.time
+        );
+        if (!prediction.valid) {
+            continue;
+        }
+
+        if (dt > bestDt) {
+            bestDt = dt;
+            bestPrediction = prediction;
+        }
     }
 
-    return predictGoalieBallThreat(brain, olderSample.pos, olderSample.time, newerSample.pos, newerSample.time);
+    return bestPrediction;
 }
 }
 
@@ -818,6 +980,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     auto robotPose = brain->data->robotPoseToField;
 
     string curRole = brain->tree->getEntry<string>("player_role");
+    const double effectiveDistTolerance = mode == "intercept" ? min(distTolerance, 0.08) : distTolerance;
 
     Pose2D targetPose = calcGoalieBlockingPose(fd, ballPos, distToGoalline, curRole);
     if (mode == "home") {
@@ -829,7 +992,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
     if ( // Considered to have reached the target position
-        dist < distTolerance
+        dist < effectiveDistTolerance
         && fabs(deltaTheta) < thetaTolerance
     ) {
         brain->client->setVelocity(0, 0, 0);
@@ -844,22 +1007,23 @@ NodeStatus GoToGoalBlockingPosition::tick() {
         double vx = 0.0;
         double vy = 0.0;
         double vtheta = 0.0;
-        const double closeRangeThreshold = 0.45;
+        const double closeRangeThreshold = mode == "intercept" ? 0.65 : 0.45;
         if (mode == "intercept") {
             const double interceptBallYaw = brain->data->ballDetected ? brain->data->ball.yawToRobot : targetDir;
+            const bool mostlyLateral = fabs(targetPose_r.y) > 0.18;
 
             if (targetRange > closeRangeThreshold) {
-                // Interceptions are usually mostly lateral; turning first makes the goalie miss the lane.
-                vx = cap(targetPose_r.x * 1.4, vxLimit, -vxLimit);
-                vy = cap(targetPose_r.y * 2.4, vyLimit, -vyLimit);
-                vtheta = cap(interceptBallYaw * 1.4, vthetaLimit, -vthetaLimit);
+                // During intercepts, get onto the lane first and keep turning secondary.
+                vx = cap(targetPose_r.x * (mostlyLateral ? 1.0 : 1.8), vxLimit, -vxLimit);
+                vy = cap(targetPose_r.y * 4.2, vyLimit, -vyLimit);
+                vtheta = cap(interceptBallYaw * (mostlyLateral ? 1.0 : 1.4), vthetaLimit, -vthetaLimit);
             } else {
-                vx = cap(targetPose_r.x * 2.5, vxLimit, -vxLimit);
-                vy = cap(targetPose_r.y * 3.0, vyLimit, -vyLimit);
-                vtheta = cap(interceptBallYaw * 1.8, vthetaLimit, -vthetaLimit);
+                vx = cap(targetPose_r.x * 3.2, vxLimit, -vxLimit);
+                vy = cap(targetPose_r.y * 4.8, vyLimit, -vyLimit);
+                vtheta = cap(interceptBallYaw * 1.6, vthetaLimit, -vthetaLimit);
 
-                if (fabs(targetPose_r.x) < distTolerance) vx = 0.0;
-                if (fabs(targetPose_r.y) < distTolerance) vy = 0.0;
+                if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
+                if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
                 if (fabs(interceptBallYaw) < thetaTolerance) vtheta = 0.0;
             }
         } else {
@@ -883,7 +1047,8 @@ NodeStatus GoToGoalBlockingPosition::tick() {
             }
         }
 
-        brain->client->setVelocity(vx, vy, vtheta, false, false, false);
+        const bool applyMinLateral = mode == "intercept";
+        brain->client->setVelocity(vx, vy, vtheta, false, applyMinLateral, applyMinLateral);
         return NodeStatus::SUCCESS;
     }
 
@@ -1285,11 +1450,16 @@ NodeStatus GoalieDecide::tick()
     } else if (
         lastDecision == "intercept"
         && lastEmergencyInterceptTime.nanoseconds() > 0
-        && brain->msecsSince(lastEmergencyInterceptTime) < 300.0
-        && brain->data->ballDetected
-        && isBallFreeForGoalieIntercept(brain, brain->data->ball.posToField)
-        && brain->data->goaliePredictedBallVelocityToField.x < -0.10
-        && brain->data->ball.posToField.x > (-goalieFd.length / 2.0 + goalieFd.goalAreaLength)
+        && brain->msecsSince(lastEmergencyInterceptTime) < 450.0
+        && !brain->data->lose_ball
+        && brain->msecsSince(brain->data->ball.timePoint) < 250.0
+        && isBallFreeForGoalieIntercept(
+            brain,
+            brain->data->ball.posToField,
+            &brain->data->goaliePredictedBallVelocityToField
+        )
+        && brain->data->goaliePredictedBallVelocityToField.x < -0.05
+        && brain->data->ball.posToField.x > (-goalieFd.length / 2.0 + 0.10)
     ) {
         emergencyIntercept.valid = true;
         emergencyIntercept.laneClear = true;
@@ -1515,6 +1685,7 @@ NodeStatus GoalieDecide::tick()
                 "interceptSpeed: %.2f\n"
                 "interceptETA: %.2f\n"
                 "goalLineY: %.2f\n"
+                "interceptPose: (%.2f, %.2f)\n"
                 "laneClear: %d\n"
                 "goalieTimeToBall: %.2f\n"
                 "teammateBestTimeToBall: %.2f\n"
@@ -1540,6 +1711,8 @@ NodeStatus GoalieDecide::tick()
                 emergencyIntercept.speed,
                 emergencyIntercept.timeToIntercept,
                 emergencyIntercept.goalLineY,
+                emergencyIntercept.interceptPose.x,
+                emergencyIntercept.interceptPose.y,
                 emergencyIntercept.laneClear,
                 goalieTimeToBall,
                 teammateBestTimeToBall,
