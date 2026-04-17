@@ -14,7 +14,7 @@
       -->
       <IfThenElse>
          <!-- Condition that is Evaluated-->
-         <ScriptCondition        name="Ball location known?" code="ball_location_known || tm_ball_pos_reliable" />
+         <ScriptCondition        name="Ball location known?" code="ball_detected || ball_location_known || tm_ball_pos_reliable" />
          <Sequence               name="[Yes] -> Track ball and adjust position" >
             <CamTrackBall />
          </Sequence>

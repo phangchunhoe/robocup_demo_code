@@ -1723,6 +1723,7 @@ void Brain::detectProcessBalls(const vector<GameObject> &ballObjs)
     if (indexRealBall >= 0)
     { // Ball detected
         data->ballDetected = true;
+        tree->setEntry<bool>("ball_detected", true);
 
         data->ball = ballObjs[indexRealBall];
         data->ball.confidence = bestConfidence;
@@ -1736,6 +1737,7 @@ void Brain::detectProcessBalls(const vector<GameObject> &ballObjs)
     else
     { // No ball detected
         data->ballDetected = false;
+        tree->setEntry<bool>("ball_detected", false);
         data->ball.boundingBox.xmin = 0;
         data->ball.boundingBox.xmax = 0;
         data->ball.boundingBox.ymin = 0;
