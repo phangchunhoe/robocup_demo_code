@@ -149,8 +149,9 @@ Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, d
 
 Pose2D calcGoalieHomePose(const FieldDimensions &fd)
 {
+    const double goalieHomeOffsetBehindPenaltyMark = 0.05;
     Pose2D targetPose;
-    targetPose.x = -fd.length / 2.0 + fd.penaltyDist;
+    targetPose.x = -fd.length / 2.0 + fd.penaltyDist - goalieHomeOffsetBehindPenaltyMark;
     targetPose.y = 0.0;
     targetPose.theta = 0.0;
     return targetPose;
@@ -614,6 +615,9 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     auto robotPose = brain->data->robotPoseToField;
 
     string curRole = brain->tree->getEntry<string>("player_role");
+    const double effectiveDistTolerance = (mode == "home" && curRole == "goal_keeper")
+        ? min(distTolerance, 0.08)
+        : distTolerance;
 
     Pose2D targetPose = (mode == "home")
         ? calcGoalieHomePose(fd)
@@ -622,7 +626,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
     if ( // Considered to have reached the target position
-        dist < distTolerance
+        dist < effectiveDistTolerance
         && fabs(deltaTheta) < thetaTolerance
     ) {
         brain->client->setVelocity(0, 0, 0);
@@ -653,8 +657,8 @@ NodeStatus GoToGoalBlockingPosition::tick() {
             vy = cap(targetPose_r.y * 2.5, vyLimit, -vyLimit);
             vtheta = cap(deltaTheta * 1.8, vthetaLimit, -vthetaLimit);
 
-            if (fabs(targetPose_r.x) < distTolerance) vx = 0.0;
-            if (fabs(targetPose_r.y) < distTolerance) vy = 0.0;
+            if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
+            if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
             if (fabs(deltaTheta) < thetaTolerance) vtheta = 0.0;
         }
 
@@ -1724,6 +1728,8 @@ NodeStatus GoToReadyPosition::tick()
     double vxLimit, vyLimit;
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
+    double xTolerance = distTolerance / 1.5;
+    double yTolerance = distTolerance / 1.5;
     if (brain->distToBorder() > - 1.0) { // near border
         vxLimit = 0.6;
         vyLimit = 0.4;
@@ -1746,12 +1752,15 @@ NodeStatus GoToReadyPosition::tick()
             ty = - fd.circleRadius / 2.0;
         }
     } else if (role == "goal_keeper") {
-        tx = -fd.length / 2.0 + fd.penaltyDist;
-        ty = 0;
-        ttheta = 0;
+        auto homePose = calcGoalieHomePose(fd);
+        tx = homePose.x;
+        ty = homePose.y;
+        ttheta = homePose.theta;
+        xTolerance = min(distTolerance, 0.08);
+        yTolerance = min(distTolerance, 0.08);
     }
 
-    brain->client->moveToPoseOnField2(tx, ty, ttheta, longRangeThreshold, turnThreshold, vxLimit, vyLimit, vthetaLimit, distTolerance / 1.5, distTolerance / 1.5, thetaTolerance, avoidObstacle);
+    brain->client->moveToPoseOnField2(tx, ty, ttheta, longRangeThreshold, turnThreshold, vxLimit, vyLimit, vthetaLimit, xTolerance, yTolerance, thetaTolerance, avoidObstacle);
     return NodeStatus::SUCCESS;
 }
 
