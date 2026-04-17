@@ -149,9 +149,8 @@ Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, d
 
 Pose2D calcGoalieHomePose(const FieldDimensions &fd)
 {
-    const double goalieHomeOffsetBehindPenaltyMark = 0.05;
     Pose2D targetPose;
-    targetPose.x = -fd.length / 2.0 + fd.penaltyDist - goalieHomeOffsetBehindPenaltyMark;
+    targetPose.x = -fd.length / 2.0 + fd.penaltyDist;
     targetPose.y = 0.0;
     targetPose.theta = 0.0;
     return targetPose;
@@ -615,8 +614,9 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     auto robotPose = brain->data->robotPoseToField;
 
     string curRole = brain->tree->getEntry<string>("player_role");
-    const double effectiveDistTolerance = (mode == "home" && curRole == "goal_keeper")
-        ? min(distTolerance, 0.08)
+    const bool goalieHomeMode = (mode == "home" && curRole == "goal_keeper");
+    const double effectiveDistTolerance = goalieHomeMode
+        ? min(distTolerance, 0.05)
         : distTolerance;
 
     Pose2D targetPose = (mode == "home")
@@ -627,7 +627,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
     if ( // Considered to have reached the target position
         dist < effectiveDistTolerance
-        && fabs(deltaTheta) < thetaTolerance
+        && (goalieHomeMode || fabs(deltaTheta) < thetaTolerance)
     ) {
         brain->client->setVelocity(0, 0, 0);
         return NodeStatus::SUCCESS;
@@ -641,6 +641,20 @@ NodeStatus GoToGoalBlockingPosition::tick() {
         double vx = 0.0;
         double vy = 0.0;
         double vtheta = 0.0;
+
+        if (goalieHomeMode) {
+            const double farGain = 1.6;
+            const double nearGain = 2.5;
+            const double gain = targetRange > 0.45 ? farGain : nearGain;
+            vx = cap(targetPose_r.x * gain, vxLimit, -vxLimit);
+            vy = cap(targetPose_r.y * gain, vyLimit, -vyLimit);
+
+            if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
+            if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
+
+            brain->client->setVelocity(vx, vy, 0.0, false, false, false);
+            return NodeStatus::SUCCESS;
+        }
 
         const double turnFirstThreshold = 0.45;
         const double closeRangeThreshold = 0.45;
@@ -1728,8 +1742,6 @@ NodeStatus GoToReadyPosition::tick()
     double vxLimit, vyLimit;
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
-    double xTolerance = distTolerance / 1.5;
-    double yTolerance = distTolerance / 1.5;
     if (brain->distToBorder() > - 1.0) { // near border
         vxLimit = 0.6;
         vyLimit = 0.4;
@@ -1753,13 +1765,29 @@ NodeStatus GoToReadyPosition::tick()
         }
     } else if (role == "goal_keeper") {
         auto homePose = calcGoalieHomePose(fd);
-        tx = homePose.x;
-        ty = homePose.y;
-        ttheta = homePose.theta;
-        xTolerance = min(distTolerance, 0.08);
-        yTolerance = min(distTolerance, 0.08);
+        auto robotPose = brain->data->robotPoseToField;
+        auto targetPose_r = brain->data->field2robot(homePose);
+        const double effectiveDistTolerance = min(distTolerance, 0.05);
+        const double dist = norm(homePose.x - robotPose.x, homePose.y - robotPose.y);
+        if (dist < effectiveDistTolerance) {
+            brain->client->setVelocity(0, 0, 0);
+            return NodeStatus::SUCCESS;
+        }
+
+        const double targetRange = norm(targetPose_r.x, targetPose_r.y);
+        const double gain = targetRange > 0.45 ? 1.6 : 2.5;
+        double vx = cap(targetPose_r.x * gain, vxLimit, -vxLimit);
+        double vy = cap(targetPose_r.y * gain, vyLimit, -vyLimit);
+
+        if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
+        if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
+
+        brain->client->setVelocity(vx, vy, 0.0, false, false, false);
+        return NodeStatus::SUCCESS;
     }
 
+    double xTolerance = distTolerance / 1.5;
+    double yTolerance = distTolerance / 1.5;
     brain->client->moveToPoseOnField2(tx, ty, ttheta, longRangeThreshold, turnThreshold, vxLimit, vyLimit, vthetaLimit, xTolerance, yTolerance, thetaTolerance, avoidObstacle);
     return NodeStatus::SUCCESS;
 }
