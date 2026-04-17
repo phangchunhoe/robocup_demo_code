@@ -150,7 +150,7 @@ Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, d
 Pose2D calcGoalieHomePose(const FieldDimensions &fd)
 {
     Pose2D targetPose;
-    targetPose.x = -fd.length / 2.0 + fd.goalAreaLength;
+    targetPose.x = -fd.length / 2.0 + fd.penaltyDist;
     targetPose.y = 0.0;
     targetPose.theta = 0.0;
     return targetPose;
@@ -1746,7 +1746,7 @@ NodeStatus GoToReadyPosition::tick()
             ty = - fd.circleRadius / 2.0;
         }
     } else if (role == "goal_keeper") {
-        tx = -fd.length / 2.0 + fd.goalAreaLength;
+        tx = -fd.length / 2.0 + fd.penaltyDist;
         ty = 0;
         ttheta = 0;
     }
