@@ -155,6 +155,47 @@ Pose2D calcGoalieHomePose(const FieldDimensions &fd)
     targetPose.theta = 0.0;
     return targetPose;
 }
+
+NodeStatus driveGoalieToHomePose(
+    Brain *brain,
+    const Pose2D &targetPose,
+    double distTolerance,
+    double thetaTolerance,
+    double vxLimit,
+    double vyLimit,
+    double vthetaLimit)
+{
+    auto robotPose = brain->data->robotPoseToField;
+    auto targetPose_r = brain->data->field2robot(targetPose);
+
+    const double effectiveDistTolerance = min(distTolerance, 0.05);
+    const double effectiveThetaTolerance = min(thetaTolerance, 0.12);
+    const double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
+    const double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
+
+    if (dist < effectiveDistTolerance) {
+        if (fabs(deltaTheta) < effectiveThetaTolerance) {
+            brain->client->setVelocity(0, 0, 0);
+        } else {
+            double vtheta = cap(deltaTheta * 1.8, vthetaLimit, -vthetaLimit);
+            brain->client->setVelocity(0.0, 0.0, vtheta, false, false, false);
+        }
+        return NodeStatus::SUCCESS;
+    }
+
+    const double targetRange = norm(targetPose_r.x, targetPose_r.y);
+    const double gain = targetRange > 0.45 ? 1.6 : 2.5;
+    double vx = cap(targetPose_r.x * gain, vxLimit, -vxLimit);
+    double vy = cap(targetPose_r.y * gain, vyLimit, -vyLimit);
+
+    if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
+    if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
+    if (fabs(vx) < 0.02) vx = 0.0;
+    if (fabs(vy) < 0.02) vy = 0.0;
+
+    brain->client->setVelocity(vx, vy, 0.0, false, false, false);
+    return NodeStatus::SUCCESS;
+}
 }
 
 /*
@@ -615,9 +656,8 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     string curRole = brain->tree->getEntry<string>("player_role");
     const bool goalieHomeMode = (mode == "home" && curRole == "goal_keeper");
-    const double effectiveDistTolerance = goalieHomeMode
-        ? min(distTolerance, 0.05)
-        : distTolerance;
+    const double effectiveDistTolerance = goalieHomeMode ? min(distTolerance, 0.05) : distTolerance;
+    const double effectiveThetaTolerance = goalieHomeMode ? min(thetaTolerance, 0.12) : thetaTolerance;
 
     Pose2D targetPose = (mode == "home")
         ? calcGoalieHomePose(fd)
@@ -625,15 +665,23 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     double dist = norm(targetPose.x - robotPose.x, targetPose.y - robotPose.y);
     double deltaTheta = toPInPI(targetPose.theta - robotPose.theta);
-    if ( // Considered to have reached the target position
-        dist < effectiveDistTolerance
-        && (goalieHomeMode || fabs(deltaTheta) < thetaTolerance)
-    ) {
+    if (dist < effectiveDistTolerance && fabs(deltaTheta) < effectiveThetaTolerance) {
         brain->client->setVelocity(0, 0, 0);
         return NodeStatus::SUCCESS;
     }
 
     if (mode == "home") {
+        if (goalieHomeMode) {
+            return driveGoalieToHomePose(
+                brain,
+                targetPose,
+                distTolerance,
+                thetaTolerance,
+                vxLimit,
+                vyLimit,
+                vthetaLimit);
+        }
+
         auto targetPose_r = brain->data->field2robot(targetPose);
         double targetDir = atan2(targetPose_r.y, targetPose_r.x);
         double targetRange = norm(targetPose_r.x, targetPose_r.y);
@@ -641,20 +689,6 @@ NodeStatus GoToGoalBlockingPosition::tick() {
         double vx = 0.0;
         double vy = 0.0;
         double vtheta = 0.0;
-
-        if (goalieHomeMode) {
-            const double farGain = 1.6;
-            const double nearGain = 2.5;
-            const double gain = targetRange > 0.45 ? farGain : nearGain;
-            vx = cap(targetPose_r.x * gain, vxLimit, -vxLimit);
-            vy = cap(targetPose_r.y * gain, vyLimit, -vyLimit);
-
-            if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
-            if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
-
-            brain->client->setVelocity(vx, vy, 0.0, false, false, false);
-            return NodeStatus::SUCCESS;
-        }
 
         const double turnFirstThreshold = 0.45;
         const double closeRangeThreshold = 0.45;
@@ -1765,25 +1799,14 @@ NodeStatus GoToReadyPosition::tick()
         }
     } else if (role == "goal_keeper") {
         auto homePose = calcGoalieHomePose(fd);
-        auto robotPose = brain->data->robotPoseToField;
-        auto targetPose_r = brain->data->field2robot(homePose);
-        const double effectiveDistTolerance = min(distTolerance, 0.05);
-        const double dist = norm(homePose.x - robotPose.x, homePose.y - robotPose.y);
-        if (dist < effectiveDistTolerance) {
-            brain->client->setVelocity(0, 0, 0);
-            return NodeStatus::SUCCESS;
-        }
-
-        const double targetRange = norm(targetPose_r.x, targetPose_r.y);
-        const double gain = targetRange > 0.45 ? 1.6 : 2.5;
-        double vx = cap(targetPose_r.x * gain, vxLimit, -vxLimit);
-        double vy = cap(targetPose_r.y * gain, vyLimit, -vyLimit);
-
-        if (fabs(targetPose_r.x) < effectiveDistTolerance) vx = 0.0;
-        if (fabs(targetPose_r.y) < effectiveDistTolerance) vy = 0.0;
-
-        brain->client->setVelocity(vx, vy, 0.0, false, false, false);
-        return NodeStatus::SUCCESS;
+        return driveGoalieToHomePose(
+            brain,
+            homePose,
+            distTolerance,
+            thetaTolerance,
+            vxLimit,
+            vyLimit,
+            vthetaLimit);
     }
 
     double xTolerance = distTolerance / 1.5;
