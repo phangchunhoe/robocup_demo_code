@@ -58,6 +58,9 @@
                         adjust_y_tolerance="0.12"
                      />
 
+                     <!-- EMERGENCY INTERCEPT: highest priority, move to predicted ball intersection -->
+                     <GoalieIntercept _while="decision == 'intercept'" vx_limit="1.2" vy_limit="0.6" />
+
                      <!-- The Below 2 is to ensure that they return to goal -->
                      <!-- Ensures that they return to goal even if they do not see the ball. -->
                      <!-- Strikers only focus on finding ball for offense -->

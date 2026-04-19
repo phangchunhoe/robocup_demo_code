@@ -55,6 +55,16 @@ public:
     double robotBallAngleToField; 
     bool lose_ball = false;
 
+    // Ball velocity tracking for trajectory prediction (field frame)
+    Point ballVelocityField = {0, 0, 0};  // Ball velocity in field frame (m/s)
+    Point prevBallPosField = {0, 0, 0};   // Previous ball position in field frame
+    rclcpp::Time prevBallPosTime;          // Timestamp of previous ball position
+    bool ballVelocityValid = false;        // Whether velocity estimate is reliable
+
+    // Emergency intercept target (field frame)
+    double interceptTargetY = 0.0;        // Y position on goal line to intercept
+    bool interceptActive = false;          // Whether intercept decision is active
+
     inline vector<GameObject> getRobots() const {
         std::lock_guard<std::mutex> lock(_robotsMutex);
         return _robots;

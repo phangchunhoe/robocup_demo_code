@@ -1727,6 +1727,21 @@ void Brain::detectProcessBalls(const vector<GameObject> &ballObjs)
         data->ball = ballObjs[indexRealBall];
         data->ball.confidence = bestConfidence;
 
+        // Compute ball velocity from consecutive position updates (field frame)
+        if (data->prevBallPosTime.nanoseconds() > 0) {
+            double dt = (data->ball.timePoint - data->prevBallPosTime).nanoseconds() / 1e9;
+            if (dt > 0.02 && dt < 1.0) {
+                data->ballVelocityField.x = (data->ball.posToField.x - data->prevBallPosField.x) / dt;
+                data->ballVelocityField.y = (data->ball.posToField.y - data->prevBallPosField.y) / dt;
+                data->ballVelocityField.z = 0;
+                data->ballVelocityValid = true;
+            } else {
+                data->ballVelocityValid = false;
+            }
+        }
+        data->prevBallPosField = data->ball.posToField;
+        data->prevBallPosTime = data->ball.timePoint;
+
         tree->setEntry<bool>("ball_location_known", true);
         updateBallOut();
         
@@ -1736,6 +1751,7 @@ void Brain::detectProcessBalls(const vector<GameObject> &ballObjs)
     else
     { // No ball detected
         data->ballDetected = false;
+        data->ballVelocityValid = false;
         data->ball.boundingBox.xmin = 0;
         data->ball.boundingBox.xmax = 0;
         data->ball.boundingBox.ymin = 0;

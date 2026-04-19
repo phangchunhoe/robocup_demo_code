@@ -188,6 +188,7 @@ void BrainTree::init()
     REGISTER_BUILDER(MoveToPoseOnField)
     REGISTER_BUILDER(GoBackInField)
     REGISTER_BUILDER(GoalieDecide)
+    REGISTER_BUILDER(GoalieIntercept)
     REGISTER_BUILDER(WaveHand)
     REGISTER_BUILDER(MoveHead)
     REGISTER_BUILDER(CheckAndStandUp)
@@ -1020,15 +1021,70 @@ NodeStatus GoalieDecide::tick()
     bool currentlyChasingAfterHysteresis = false;
 
     string newDecision;
-    if (!(iKnowBallPos || tmBallPosReliable))
+
+    // --- HIGHEST PRIORITY: Emergency Intercept ---
+    // Detect a free-moving ball predicted to enter our goal and intercept it
+    if (iKnowBallPos && brain->data->ballVelocityValid) {
+        const auto &fd = brain->config->fieldDimensions;
+        double bvx = brain->data->ballVelocityField.x;
+        double bvy = brain->data->ballVelocityField.y;
+        double ballSpeed = norm(bvx, bvy);
+
+        const double MIN_BALL_SPEED = 0.3;  // Reject stationary balls
+        double goalLineX = -fd.length / 2.0;
+
+        // Ball must be moving toward own goal (negative vx) and fast enough
+        bool ballMovingTowardGoal = (bvx < -MIN_BALL_SPEED);
+
+        // Ball must NOT already be inside own penalty area
+        bool ballInPenaltyArea = (
+            decisionBallPosToField.x < (goalLineX + fd.penaltyAreaLength)
+            && fabs(decisionBallPosToField.y) < (fd.penaltyAreaWidth / 2.0)
+        );
+
+        if (ballMovingTowardGoal && !ballInPenaltyArea && ballSpeed > MIN_BALL_SPEED) {
+            // Predict intersection with goal line
+            double timeToGoalLine = (goalLineX - decisionBallPosToField.x) / bvx;
+            double intersectY = decisionBallPosToField.y + bvy * timeToGoalLine;
+
+            // Only trigger if ball will hit within goal width (with small margin)
+            double goalHalfW = fd.goalWidth / 2.0 + 0.3;
+            bool hitsGoal = (fabs(intersectY) < goalHalfW)
+                && (timeToGoalLine > 0.0)
+                && (timeToGoalLine < 5.0);
+
+            // Check ball is free (not possessed by a nearby player)
+            bool ballFree = (ballRange > 0.5);
+
+            if (hitsGoal && ballFree) {
+                newDecision = "intercept";
+                brain->data->interceptTargetY = cap(intersectY,
+                    fd.goalWidth / 2.0 - 0.2, -fd.goalWidth / 2.0 + 0.2);
+                brain->data->interceptActive = true;
+
+                brain->log->strategy(
+                    "GoalieDecide",
+                    format("INTERCEPT: ballSpeed=%.2f timeToGoal=%.2f intersectY=%.2f targetY=%.2f",
+                        ballSpeed, timeToGoalLine, intersectY, brain->data->interceptTargetY)
+                );
+            }
+        }
+    }
+
+    // If intercept was not triggered, clear the flag and proceed with normal logic
+    if (newDecision.empty()) {
+        brain->data->interceptActive = false;
+    }
+
+    if (newDecision.empty() && !(iKnowBallPos || tmBallPosReliable))
     {
         newDecision = "find";
     }
-    else if (canClearNow)
+    else if (newDecision.empty() && canClearNow)
     {
         newDecision = "kick";
     }
-    else
+    else if (newDecision.empty())
     {
         auto clamp01 = [](double x) {
             if (x < 0.0) return 0.0;
@@ -1255,6 +1311,43 @@ NodeStatus GoalieDecide::tick()
     marker_array.markers.push_back(decision_marker);
     brain->visualizer->publishMarkers(marker_array);
     
+    return NodeStatus::SUCCESS;
+}
+
+NodeStatus GoalieIntercept::tick()
+{
+    auto log = [&](string msg) {
+        brain->log->debug("GoalieIntercept", msg);
+    };
+    log("ticked");
+
+    auto fd = brain->config->fieldDimensions;
+    double goalLineX = -fd.length / 2.0;
+    double targetX = goalLineX + 0.4;  // Stand slightly in front of goal line
+    double targetY = brain->data->interceptTargetY;
+
+    // Face toward the ball for best blocking posture
+    auto ballPos = brain->data->ball.posToField;
+    double targetTheta = atan2(ballPos.y - targetY, ballPos.x - targetX);
+
+    double vxLimit, vyLimit;
+    getInput("vx_limit", vxLimit);
+    getInput("vy_limit", vyLimit);
+
+    log(format("target: (%.2f, %.2f, %.2f) ballPos: (%.2f, %.2f)",
+        targetX, targetY, targetTheta, ballPos.x, ballPos.y));
+
+    brain->client->moveToPoseOnField2(
+        targetX, targetY, targetTheta,
+        0.5,      // longRangeThreshold - react quickly
+        0.3,      // turnThreshold
+        vxLimit,
+        vyLimit,
+        1.5,      // vthetaLimit - fast turning
+        0.3, 0.3, 0.5,  // tolerances
+        false     // no obstacle avoidance during emergency
+    );
+
     return NodeStatus::SUCCESS;
 }
 

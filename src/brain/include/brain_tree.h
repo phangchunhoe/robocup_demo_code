@@ -125,6 +125,26 @@ private:
 };
 
 
+class GoalieIntercept : public SyncActionNode
+{
+public:
+    GoalieIntercept(const std::string &name, const NodeConfig &config, Brain *_brain) : SyncActionNode(name, config), brain(_brain) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            InputPort<double>("vx_limit", 1.2, "Max forward speed during intercept"),
+            InputPort<double>("vy_limit", 0.6, "Max lateral speed during intercept"),
+        };
+    }
+
+    BT::NodeStatus tick() override;
+
+private:
+    Brain *brain;
+};
+
+
 class CamTrackBall : public SyncActionNode
 {
 public:
