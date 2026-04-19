@@ -1020,9 +1020,17 @@ NodeStatus GoalieDecide::tick()
     bool currentlyChasingAfterHysteresis = false;
 
     string newDecision;
+    // If the goalie has not seen the ball for more than 5 seconds, retreat to home position
+    double secsSinceLastBallSeen = brain->msecsSince(brain->data->ball.timePoint) / 1000.0;
+    const double GOALIE_RETREAT_TIMEOUT = 5.0;
+
     if (!(iKnowBallPos || tmBallPosReliable))
     {
         newDecision = "find";
+    }
+    else if (secsSinceLastBallSeen > GOALIE_RETREAT_TIMEOUT)
+    {
+        newDecision = "retreat";
     }
     else if (canClearNow)
     {
