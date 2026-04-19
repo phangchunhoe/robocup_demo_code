@@ -617,7 +617,7 @@ NodeStatus GoToGoalBlockingPosition::tick() {
 
     const double longRangeThreshold = 1.0;
     const double turnThreshold = 0.4;
-    const double vthetaLimit = 1.2;
+    const double vthetaLimit = 1.5;
     const bool avoidObstacle = false;
     brain->client->moveToPoseOnField2(
         targetPose.x,
