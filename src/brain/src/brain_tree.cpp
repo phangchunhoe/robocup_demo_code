@@ -137,7 +137,7 @@ Pose2D calcGoalieBlockingPose(const FieldDimensions &fd, const Point &ballPos, d
         : max(0.2, fd.goalAreaWidth / 2.0 - 0.2);
     targetPose.y = cap(targetPose.y, maxAbsY, -maxAbsY);
 
-    const double maxX = goalCenter.x + max(distToGoalline, fd.goalAreaLength + 0.2);
+    const double maxX = goalCenter.x + min(max(distToGoalline, fd.goalAreaLength + 0.2), fd.penaltyAreaLength);
     targetPose.x = cap(targetPose.x, maxX, goalCenter.x + minGoalClearance);
     targetPose.theta = atan2(ballPos.y - targetPose.y, ballPos.x - targetPose.x);
     return targetPose;
